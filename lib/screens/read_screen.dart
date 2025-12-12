@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/nfc_provider.dart';
 
@@ -30,6 +31,12 @@ class _ReadScreenState extends State<ReadScreen> {
             icon: const Icon(Icons.refresh),
             onPressed: () {
               Provider.of<NfcProvider>(context, listen: false).startScan();
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.history),
+            onPressed: () {
+              _showLastScannedInfo(context);
             },
           ),
         ],
@@ -96,7 +103,18 @@ class _ReadScreenState extends State<ReadScreen> {
             );
           }
 
-          if (provider.cardData.isEmpty) {
+          // Use the new provider methods to get data
+          final blocks = provider.getBlocks();
+          final keyInfo = provider.getKeyInfo();
+          final uid = provider.getCardInfo('uid', 'N/A');
+          final type = provider.getCardInfo('type', 'N/A');
+          final size = provider.getCardInfoInt('size', 0);
+          final sectorCount = provider.getCardInfoInt('sectorCount', 0);
+          final successfulSectors = provider.getCardInfoInt('successfulSectors', 0);
+          final fullUid = provider.getCardInfo('fullUid', uid);
+
+// In the Consumer builder in ReadScreen
+          if (!provider.isLoading && provider.cardData.isEmpty) {
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -104,41 +122,55 @@ class _ReadScreenState extends State<ReadScreen> {
                   Icon(
                     Icons.nfc,
                     size: 80,
-                    color: Colors.grey.shade400,
+                    color: Colors.blue.shade400,
                   ),
                   const SizedBox(height: 20),
                   const Text(
-                    'Hold your Mifare Classic 1K card\nnear the NFC antenna',
+                    'Ready to Scan',
+                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Hold your Mifare Classic card near\nthe NFC antenna to read',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 18,
-                      color: Colors.grey,
+                    style: TextStyle(fontSize: 16, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 30),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      print('DEBUG: Manual scan button pressed');
+                      provider.startScan();
+                    },
+                    icon: const Icon(Icons.search),
+                    label: const Text('Start Scanning'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
                     ),
                   ),
                   const SizedBox(height: 20),
-                  ElevatedButton.icon(
-                    onPressed: () => provider.startScan(),
-                    icon: const Icon(Icons.search),
-                    label: const Text('Start Scanning'),
-                  ),
+                  if (provider.lastScannedUid.isNotEmpty) ...[
+                    const Text('Last detected:'),
+                    const SizedBox(height: 10),
+                    Text(
+                      provider.lastScannedUid,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             );
           }
-
-          // Safely get blocks data
-          final blocks = _getBlocksFromData(provider.cardData);
-
-          // Safely get readingKey with null check
-          final readingKey = _getStringFromData(provider.cardData, 'readingKey', 'Key A (Default)');
-
           return SingleChildScrollView(
             child: Padding(
               padding: const EdgeInsets.all(16.0),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Card Info
+                  // Card Info with last scanned history
                   Card(
                     elevation: 3,
                     child: Padding(
@@ -146,20 +178,102 @@ class _ReadScreenState extends State<ReadScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            'Card Information',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
+                          Row(
+                            children: [
+                              const Text(
+                                'Card Information',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
+                              const Spacer(),
+                              // Show UID copy button
+                              IconButton(
+                                icon: const Icon(Icons.copy, size: 20),
+                                onPressed: () {
+                                  _copyToClipboard(context, uid);
+                                },
+                              ),
+                            ],
                           ),
                           const SizedBox(height: 12),
-                          _buildInfoRow('UID', _getStringFromData(provider.cardData, 'uid', 'N/A')),
-                          _buildInfoRow('Type', _getStringFromData(provider.cardData, 'type', 'N/A')),
-                          _buildInfoRow('Size', '${_getIntFromData(provider.cardData, 'size', 0)} bytes'),
-                          _buildInfoRow('Sectors', '${_getIntFromData(provider.cardData, 'sectorCount', 0)}'),
-                          _buildInfoRow('Successfully Read', '${_getIntFromData(provider.cardData, 'successfulSectors', 0)} sectors'),
-                          _buildInfoRow('Reading Key', readingKey),
+                          _buildInfoRow('UID', uid),
+                          _buildInfoRow('Type', type),
+                          _buildInfoRow('Size', '$size bytes'),
+                          _buildInfoRow('Sectors', '$sectorCount'),
+                          _buildInfoRow('Successfully Read', '$successfulSectors sectors'),
+
+                          // Show saved custom keys
+                          if (provider.customKeys.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            const Divider(),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Saved Keys',
+                              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue),
+                            ),
+                            const SizedBox(height: 4),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 4,
+                              children: provider.customKeys.entries.map((entry) {
+                                final parts = entry.key.split('_');
+                                final keyType = parts[0];
+                                final sector = parts.length > 1 ? parts[1] : '?';
+                                return Chip(
+                                  label: Text('S$sector Key$keyType'),
+                                  avatar: Icon(keyType == 'A' ? Icons.vpn_key : Icons.key, size: 16),
+                                  backgroundColor: Colors.blue.shade100,
+                                  deleteIcon: const Icon(Icons.close, size: 16),
+                                  onDeleted: () => _removeKey(context, int.parse(sector), keyType),
+                                );
+                              }).toList(),
+                            ),
+                          ],
+
+                          // Last scanned info
+                          if (provider.lastScannedUid.isNotEmpty &&
+                              provider.lastScannedUid != uid) ...[
+                            const Divider(height: 30),
+                            Row(
+                              children: [
+                                Icon(Icons.history, color: Colors.grey.shade600, size: 18),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Previous Scan:',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.grey,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      provider.lastScannedUid,
+                                      style: const TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.copy, size: 18),
+                                    onPressed: () {
+                                      _copyToClipboard(context, provider.lastScannedUid);
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -167,8 +281,8 @@ class _ReadScreenState extends State<ReadScreen> {
 
                   const SizedBox(height: 20),
 
-                  // Reading Status Info
-                  Card(
+                  // Authentication Status
+                  if (keyInfo.isNotEmpty) Card(
                     elevation: 3,
                     color: Colors.blue.shade50,
                     child: Padding(
@@ -178,34 +292,63 @@ class _ReadScreenState extends State<ReadScreen> {
                         children: [
                           Row(
                             children: [
-                              Icon(Icons.info, color: Colors.blue.shade800),
+                              Icon(Icons.verified_user, color: Colors.blue.shade800),
                               const SizedBox(width: 8),
                               const Text(
-                                'Reading Information',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.blue,
-                                ),
+                                'Authentication Status',
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 8),
-                          Text(
-                            '• Using $readingKey to read sectors',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          Text(
-                            '• Key A is never readable in trailer blocks (by design)',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          Text(
-                            '• Key B may be readable depending on access bits',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          Text(
-                            '• Access bits control which keys can read/write data',
-                            style: const TextStyle(fontSize: 12),
+                          const SizedBox(height: 12),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: keyInfo.map((keyData) {
+                              final sector = keyData['sector'] ?? 0;
+                              final keyType = keyData['keyType'] ?? '';
+                              final authenticated = keyData['authenticated'] ?? false;
+                              final key = keyData['key'] ?? '';
+
+                              return Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: authenticated ? Colors.green.shade100 : Colors.red.shade100,
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color: authenticated ? Colors.green.shade300 : Colors.red.shade300,
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      'S$sector',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      keyType == 'A' ? Icons.vpn_key : Icons.key,
+                                      size: 14,
+                                      color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
+                                    ),
+                                    if (authenticated && key.isNotEmpty) ...[
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        '✓',
+                                        style: TextStyle(
+                                          color: Colors.green.shade800,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              );
+                            }).toList(),
                           ),
                         ],
                       ),
@@ -217,14 +360,11 @@ class _ReadScreenState extends State<ReadScreen> {
                   // Blocks List
                   const Text(
                     'Memory Blocks',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 12),
 
-                  if (blocks.isNotEmpty) ..._buildSectorViews(blocks, readingKey),
+                  if (blocks.isNotEmpty) ..._buildSectorViews(blocks, keyInfo),
                 ],
               ),
             ),
@@ -234,52 +374,107 @@ class _ReadScreenState extends State<ReadScreen> {
     );
   }
 
-  // Helper methods for safe data extraction
-  List<Map<String, dynamic>> _getBlocksFromData(Map<Object?, Object?> cardData) {
-    try {
-      final blocks = cardData['blocks'];
-      if (blocks is List) {
-        return blocks.map((item) {
-          if (item is Map<String, dynamic>) {
-            return item;
-          } else if (item is Map) {
-            // Convert Map<Object?, Object?> to Map<String, dynamic>
-            return Map<String, dynamic>.fromEntries(
-                item.entries.map((e) =>
-                    MapEntry(e.key.toString(), e.value)
-                )
-            );
-          }
-          return <String, dynamic>{};
-        }).toList();
-      }
-    } catch (e) {
-      print('Error getting blocks: $e');
+  void _removeKey(BuildContext context, int sector, String keyType) async {
+    final provider = Provider.of<NfcProvider>(context, listen: false);
+    final success = await provider.removeCustomKey(sector, keyType);
+
+    if (success && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Key ${keyType} for sector $sector removed'),
+          backgroundColor: Colors.orange,
+        ),
+      );
     }
-    return [];
   }
 
-  String _getStringFromData(Map<Object?, Object?> cardData, String key, String defaultValue) {
-    try {
-      final value = cardData[key];
-      if (value is String) return value;
-      if (value != null) return value.toString();
-    } catch (e) {
-      print('Error getting string for key $key: $e');
-    }
-    return defaultValue;
+  // Helper method to copy to clipboard
+  void _copyToClipboard(BuildContext context, String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied: $text'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
-  int _getIntFromData(Map<Object?, Object?> cardData, String key, int defaultValue) {
-    try {
-      final value = cardData[key];
-      if (value is int) return value;
-      if (value is double) return value.toInt();
-      if (value is String) return int.tryParse(value) ?? defaultValue;
-    } catch (e) {
-      print('Error getting int for key $key: $e');
-    }
-    return defaultValue;
+  // Dialog to show last scanned info
+  void _showLastScannedInfo(BuildContext context) {
+    final provider = Provider.of<NfcProvider>(context, listen: false);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.history),
+            SizedBox(width: 10),
+            Text('Scan History'),
+          ],
+        ),
+        content: provider.lastScannedUid.isNotEmpty
+            ? Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Last scanned card UID:'),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                provider.lastScannedUid,
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: () {
+                    _copyToClipboard(context, provider.lastScannedUid);
+                  },
+                  icon: const Icon(Icons.copy),
+                  label: const Text('Copy'),
+                ),
+                const SizedBox(width: 10),
+                TextButton.icon(
+                  onPressed: () async {
+                    await provider.clearLastScannedUid();
+                    if (context.mounted) {
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Scan history cleared'),
+                          backgroundColor: Colors.orange,
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.delete, color: Colors.red),
+                  label: const Text('Clear', style: TextStyle(color: Colors.red)),
+                ),
+              ],
+            ),
+          ],
+        )
+            : const Text('No scan history available.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildInfoRow(String label, String value) {
@@ -289,22 +484,13 @@ class _ReadScreenState extends State<ReadScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 120,
-            child: Text(
-              '$label:',
-              style: const TextStyle(
-                fontWeight: FontWeight.w500,
-                color: Colors.grey,
-              ),
-            ),
+            width: 150,
+            child: Text('$label:', style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.grey)),
           ),
           Expanded(
-            child: Text(
+            child: SelectableText(
               value,
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 14,
-              ),
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
             ),
           ),
         ],
@@ -312,29 +498,38 @@ class _ReadScreenState extends State<ReadScreen> {
     );
   }
 
-  List<Widget> _buildSectorViews(List<Map<String, dynamic>> blocks, String readingKey) {
+  List<Widget> _buildSectorViews(List<Map<String, dynamic>> blocks, List<Map<String, dynamic>> keyInfo) {
     // Group blocks by sector
     Map<int, List<Map<String, dynamic>>> sectors = {};
     for (var block in blocks) {
       final sector = (block['sector'] as int?) ?? 0;
-      if (!sectors.containsKey(sector)) {
-        sectors[sector] = [];
-      }
-      sectors[sector]!.add(block);
+      sectors.putIfAbsent(sector, () => []).add(block);
     }
 
     // Create sector widgets
     return sectors.entries.map((entry) {
-      return _buildSectorCard(entry.key, entry.value, readingKey);
+      final sectorKeyInfo = keyInfo.firstWhere(
+            (info) => info['sector'] == entry.key,
+        orElse: () => {'keyType': '', 'key': '', 'authenticated': false},
+      );
+      return _buildSectorCard(entry.key, entry.value, sectorKeyInfo);
     }).toList();
   }
 
-  Widget _buildSectorCard(int sector, List<Map<String, dynamic>> blocks, String readingKey) {
-    // Check if this sector was read successfully
-    final hasAuthError = blocks.any((block) {
-      final hex = (block['hex'] as String?) ?? '';
-      return hex == 'AUTH ERROR' || hex == 'READ ERROR';
-    });
+  Widget _buildSectorCard(int sector, List<Map<String, dynamic>> blocks, Map<String, dynamic> keyInfo) {
+    final keyType = keyInfo['keyType'] ?? '';
+    final keyHex = keyInfo['key'] ?? '';
+    final authenticated = keyInfo['authenticated'] ?? false;
+
+    final hasAuthError = blocks.any((block) => block['hex'] == 'AUTH ERROR' || block['hex'] == 'READ ERROR');
+
+    String readingInfo = 'Not authenticated';
+    if (authenticated) {
+      readingInfo = 'Key $keyType';
+      if (keyHex.isNotEmpty) {
+        readingInfo += ' ($keyHex)';
+      }
+    }
 
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
@@ -346,90 +541,61 @@ class _ReadScreenState extends State<ReadScreen> {
             Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: hasAuthError ? Colors.red.shade100 : Colors.blue.shade100,
+                    color: authenticated ? Colors.green.shade100 : Colors.red.shade100,
                     borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    'Sector $sector',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: hasAuthError ? Colors.red.shade800 : Colors.blue.shade800,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: readingKey.contains('Key A') ? Colors.blue.shade50 : Colors.green.shade50,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: readingKey.contains('Key A') ? Colors.blue.shade200 : Colors.green.shade200,
-                    ),
                   ),
                   child: Row(
                     children: [
+                      Text('Sector $sector', style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
+                      )),
+                      const SizedBox(width: 8),
                       Icon(
-                        readingKey.contains('Key A') ? Icons.vpn_key : Icons.key,
-                        size: 12,
-                        color: readingKey.contains('Key A') ? Colors.blue : Colors.green,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        readingKey,
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: readingKey.contains('Key A') ? Colors.blue : Colors.green,
-                        ),
+                        keyType == 'A' ? Icons.vpn_key : Icons.key,
+                        size: 16,
+                        color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
                       ),
                     ],
                   ),
                 ),
-                const Spacer(),
-                Text(
-                  '${blocks.length} blocks',
-                  style: const TextStyle(
-                    color: Colors.grey,
-                    fontSize: 12,
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    readingInfo,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: authenticated ? Colors.green.shade700 : Colors.red.shade700,
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            ...blocks.map((block) {
-              final isTrailer = (block['isTrailer'] as bool?) ?? false;
-              return isTrailer
-                  ? _buildTrailerBlockRow(block, readingKey)
-                  : _buildDataBlockRow(block, readingKey);
-            }).toList(),
+            ...blocks.map((block) => _buildBlockRow(block, keyType, authenticated)),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildDataBlockRow(Map<String, dynamic> block, String readingKey) {
-    final hex = (block['hex'] as String?) ?? '';
-    final text = (block['text'] as String?) ?? '';
-    final blockNum = (block['block'] as int?) ?? 0;
-    final absBlock = (block['absBlock'] as int?) ?? 0;
-    final isError = hex == 'AUTH ERROR' || hex == 'READ ERROR';
+  Widget _buildBlockRow(Map<String, dynamic> block, String keyType, bool sectorAuthenticated) {
+    final hex = block['hex'] ?? '';
+    final text = block['text'] ?? '';
+    final blockNum = block['block'] ?? 0;
+    final isTrailer = block['isTrailer'] ?? false;
+    final isError = !sectorAuthenticated || hex == 'AUTH ERROR' || hex == 'READ ERROR';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: isError ? Colors.red.shade50 : Colors.grey.shade50,
+        color: isError ? Colors.red.shade50 : (isTrailer ? Colors.orange.shade50 : Colors.grey.shade50),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: isError ? Colors.red.shade200 : Colors.grey.shade200,
-          width: 1,
+          color: isError ? Colors.red.shade200 : (isTrailer ? Colors.orange.shade200 : Colors.grey.shade200),
         ),
       ),
       child: Column(
@@ -438,49 +604,22 @@ class _ReadScreenState extends State<ReadScreen> {
           Row(
             children: [
               Chip(
-                label: Text(
-                  'Block $blockNum',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isError ? Colors.red.shade800 : Colors.blue.shade800,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                backgroundColor: isError ? Colors.red.shade100 : Colors.blue.shade100,
+                label: Text(isTrailer ? 'Block $blockNum (Trailer)' : 'Block $blockNum'),
+                backgroundColor: isError ? Colors.red.shade100 : (isTrailer ? Colors.orange.shade100 : Colors.blue.shade100),
                 visualDensity: VisualDensity.compact,
               ),
               const SizedBox(width: 8),
-              Text(
-                'Abs: $absBlock',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey,
-                ),
-              ),
-              const Spacer(),
-              // Show which key was used to read this block
-              Container(
+              if (sectorAuthenticated) Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: readingKey.contains('Key A') ? Colors.blue.shade100 : Colors.green.shade100,
+                  color: keyType == 'A' ? Colors.blue.shade100 : Colors.green.shade100,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(
                   children: [
-                    Icon(
-                      readingKey.contains('Key A') ? Icons.vpn_key : Icons.key,
-                      size: 12,
-                      color: readingKey.contains('Key A') ? Colors.blue : Colors.green,
-                    ),
+                    Icon(keyType == 'A' ? Icons.vpn_key : Icons.key, size: 12),
                     const SizedBox(width: 4),
-                    Text(
-                      'Read with ${readingKey.contains('Key A') ? 'A' : 'B'}',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: readingKey.contains('Key A') ? Colors.blue : Colors.green,
-                      ),
-                    ),
+                    Text('Key $keyType', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
                   ],
                 ),
               ),
@@ -488,531 +627,18 @@ class _ReadScreenState extends State<ReadScreen> {
           ),
           const SizedBox(height: 6),
           if (!isError) ...[
-            SelectableText(
-              'Hex: $hex',
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12,
-              ),
-            ),
+            SelectableText('Hex: $hex', style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
             const SizedBox(height: 4),
-            SelectableText(
-              'Text: "$text"',
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12,
-              ),
-            ),
+            SelectableText('Text: "$text"', style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
           ] else ...[
-            Row(
-              children: [
-                Icon(Icons.error, size: 14, color: Colors.red),
-                const SizedBox(width: 4),
-                Text(
-                  hex,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.red,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Cannot read with current key',
-              style: TextStyle(
-                fontSize: 11,
-                color: Colors.red.shade600,
-              ),
-            ),
+            Row(children: [
+              const Icon(Icons.error, size: 14, color: Colors.red),
+              const SizedBox(width: 4),
+              Text(hex, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+            ]),
           ],
         ],
       ),
     );
-  }
-
-  Widget _buildTrailerBlockRow(Map<String, dynamic> block, String readingKey) {
-    final hex = (block['hex'] as String?) ?? '';
-    final blockNum = (block['block'] as int?) ?? 0;
-    final absBlock = (block['absBlock'] as int?) ?? 0;
-    final isError = hex == 'AUTH ERROR' || hex == 'READ ERROR';
-
-    // If error, show the error message
-    if (isError) {
-      return Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: Colors.red.shade50,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: Colors.red.shade200,
-            width: 1,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Chip(
-                  label: Text(
-                    'Block $blockNum (Trailer)',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.red.shade800,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  backgroundColor: Colors.red.shade100,
-                  visualDensity: VisualDensity.compact,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'Abs: $absBlock',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey,
-                  ),
-                ),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: readingKey.contains('Key A') ? Colors.blue.shade100 : Colors.green.shade100,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        readingKey.contains('Key A') ? Icons.vpn_key : Icons.key,
-                        size: 12,
-                        color: readingKey.contains('Key A') ? Colors.blue : Colors.green,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Trying ${readingKey.contains('Key A') ? 'A' : 'B'}',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: readingKey.contains('Key A') ? Colors.blue : Colors.green,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                Icon(Icons.error, size: 14, color: Colors.red),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    'AUTHENTICATION ERROR - Cannot read with ${readingKey.contains('Key A') ? 'Key A' : 'Key B'}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.red,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Trailer block access denied with current key',
-              style: TextStyle(
-                fontSize: 11,
-                color: Colors.red.shade600,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    // Parse the trailer block (16 bytes = 32 hex characters)
-    // Format: Key A (6 bytes) + Access Bits (4 bytes) + Key B (6 bytes)
-    String keyAHex = '';
-    String accessBitsHex = '';
-    String keyBHex = '';
-
-    if (hex.length >= 32) {
-      keyAHex = hex.substring(0, 12); // 6 bytes = 12 hex chars
-      accessBitsHex = hex.substring(12, 20); // 4 bytes = 8 hex chars (B6,B7,B8 + user byte)
-      keyBHex = hex.substring(20, 32); // 6 bytes = 12 hex chars
-    }
-
-    // Determine if Key B is readable based on access bits
-    final bool isKeyBReadable = _isKeyBReadable(accessBitsHex);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Colors.orange.shade50,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: Colors.orange.shade200,
-          width: 1,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Chip(
-                label: Text(
-                  'Block $blockNum (Trailer)',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.orange.shade800,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                backgroundColor: Colors.orange.shade100,
-                visualDensity: VisualDensity.compact,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Abs: $absBlock',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey,
-                ),
-              ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: readingKey.contains('Key A') ? Colors.blue.shade100 : Colors.green.shade100,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      readingKey.contains('Key A') ? Icons.vpn_key : Icons.key,
-                      size: 12,
-                      color: readingKey.contains('Key A') ? Colors.blue : Colors.green,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Read with ${readingKey.contains('Key A') ? 'A' : 'B'}',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: readingKey.contains('Key A') ? Colors.blue : Colors.green,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-
-          // Key A Section
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.blue.shade50,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.vpn_key, size: 16, color: Colors.blue.shade800),
-                    const SizedBox(width: 6),
-                    const Text(
-                      'Key A (Never Readable)',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade200,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.visibility_off, size: 14, color: Colors.grey.shade600),
-                      const SizedBox(width: 6),
-                      Text(
-                        keyAHex.isNotEmpty ? keyAHex : '????????????',
-                        style: TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.grey.shade600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Text(
-                  'Key A is never readable (by MIFARE design)',
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: Colors.grey.shade600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 8),
-
-          // Access Bits Section
-          if (accessBitsHex.isNotEmpty) Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.purple.shade50,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.lock, size: 16, color: Colors.purple.shade800),
-                    const SizedBox(width: 6),
-                    const Text(
-                      'Access Bits',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.purple,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SelectableText(
-                            accessBitsHex.substring(0, 6), // B6,B7,B8
-                            style: const TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Text(
-                            'B6,B7,B8 (3 bytes)',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SelectableText(
-                            accessBitsHex.substring(6, 8), // User byte
-                            style: const TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.green,
-                            ),
-                          ),
-                          Text(
-                            'User Byte (0x69 = Key B readable)',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                ElevatedButton(
-                  onPressed: () {
-                    // Navigate to Access Bits Tool with the access bits
-                    Navigator.pushNamed(
-                      context,
-                      '/access-bits-tool',
-                      arguments: {'accessBits': accessBitsHex.substring(0, 6)},
-                    );
-                  },
-                  style: ElevatedButton.styleFrom(
-                    minimumSize: const Size(double.infinity, 30),
-                    backgroundColor: Colors.purple.shade100,
-                    foregroundColor: Colors.purple.shade800,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                  ),
-                  child: const Text(
-                    'Decode Access Bits',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
-          ) else Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade50,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: const Text(
-              'Access bits not available',
-              style: TextStyle(fontSize: 12),
-            ),
-          ),
-
-          const SizedBox(height: 8),
-
-          // Key B Section
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: isKeyBReadable ? Colors.green.shade50 : Colors.grey.shade50,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.key, size: 16,
-                        color: isKeyBReadable ? Colors.green.shade800 : Colors.grey.shade600),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Key B ${isKeyBReadable ? '(Readable)' : '(Not Readable)'}',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: isKeyBReadable ? Colors.green : Colors.grey,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                if (isKeyBReadable && keyBHex.isNotEmpty) ...[
-                  SelectableText(
-                    keyBHex,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Text(
-                    'Key B is readable (access bits allow it)',
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: Colors.green.shade600,
-                    ),
-                  ),
-                ] else ...[
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade200,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.visibility_off, size: 14, color: Colors.grey.shade600),
-                        const SizedBox(width: 6),
-                        Text(
-                          keyBHex.isNotEmpty ? keyBHex : '????????????',
-                          style: TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.grey.shade600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Text(
-                    isKeyBReadable
-                        ? 'Key B not present in data'
-                        : 'Key B is not readable (access bits prevent it)',
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 8),
-
-          // Full block hex for reference
-          if (hex.isNotEmpty) Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Full Block Hex',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.grey,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                SelectableText(
-                  hex,
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // Helper function to determine if Key B is readable based on access bits
-  bool _isKeyBReadable(String accessBitsHex) {
-    if (accessBitsHex.length < 8) return false;
-
-    // User byte is the last byte of access bits (position 6-7)
-    final userByte = accessBitsHex.substring(6, 8);
-
-    // User byte 0x69 (or 0x00, 0x01, 0x02, etc.) determines Key B readability
-    // According to MIFARE spec, if user byte is 0x69, Key B is readable
-    // If user byte is 0x00, Key B is not readable (used as data)
-    return userByte == '69';
   }
 }

@@ -1,206 +1,350 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:convert';
 
-class NfcProvider extends ChangeNotifier {
-  bool _isNfcAvailable = false;
-  bool _isLoading = false;
+class NfcProvider with ChangeNotifier {
+  static const MethodChannel _channel = MethodChannel('mifare_classic/method');
+  static const EventChannel _eventChannel = EventChannel('mifare_classic/events');
+
   String _errorMessage = '';
-  String _lastScannedUid = '';
+  bool _isLoading = false;
+  bool _isNfcAvailable = true; // Assume NFC is available
   Map<String, dynamic> _cardData = {};
+  Map<String, String> _customKeys = {};
+  String _lastScannedUid = '';
+  Stream<dynamic>? _tagStream;
 
-  // Method channel for native communication
-  static const platform = MethodChannel('mifare_classic/method');
-  static const eventChannel = EventChannel('mifare_classic/events');
-
-  // Stream subscription for events
-  StreamSubscription? _eventSubscription;
-
-  // Store configuration for simulation
-  Map<int, Map<String, String>> _sectorConfig = {};
-
-  bool get isNfcAvailable => _isNfcAvailable;
-  bool get isLoading => _isLoading;
   String get errorMessage => _errorMessage;
-  String get lastScannedUid => _lastScannedUid;
+  bool get isLoading => _isLoading;
+  bool get isNfcAvailable => _isNfcAvailable;
   Map<String, dynamic> get cardData => _cardData;
+  Map<String, String> get customKeys => _customKeys;
+  String get lastScannedUid => _lastScannedUid;
 
   NfcProvider() {
-    _initializeSectorConfig();
-    _initializeNfc();
+    _initStream();
   }
 
-  void _initializeSectorConfig() {
-    for (int i = 1; i <= 15; i++) {
-      _sectorConfig[i] = {
-        'keyA': 'FFFFFFFFFFFF',
-        'keyB': 'FFFFFFFFFFFF',
-        'accessBits': 'FF078069'
-      };
-    }
-  }
+  void _initStream() {
+    print('DEBUG: Initializing NFC stream');
+    _tagStream = _eventChannel.receiveBroadcastStream();
 
-  Future<void> _initializeNfc() async {
-    try {
-      _isLoading = true;
-      notifyListeners();
+    _tagStream?.listen((data) {
+      print('DEBUG: Received NFC data in Flutter');
+      print('DEBUG: Data type: ${data.runtimeType}');
 
-      // Initialize NFC
-      final bool? result = await platform.invokeMethod('startScan');
-      _isNfcAvailable = result ?? false;
+      try {
+        // Safely convert the data
+        final mapData = _convertData(data);
 
-      // Setup event listener
-      _setupEventListener();
+        print('DEBUG: Converted data keys: ${mapData.keys.toList()}');
 
-      _isLoading = false;
-      notifyListeners();
-    } on PlatformException catch (e) {
-      print("NFC initialization error: ${e.message}");
-      _isLoading = false;
-      _errorMessage = "NFC not available on this device";
-      _isNfcAvailable = false;
-      notifyListeners();
-    }
-  }
+        // Extract UID
+        final uid = mapData['uid']?.toString() ?? '';
+        if (uid.isNotEmpty && uid != 'N/A') {
+          print('DEBUG: Tag UID: $uid');
+          _lastScannedUid = uid;
+        }
 
-  void _setupEventListener() {
-    try {
-      _eventSubscription = eventChannel.receiveBroadcastStream().listen(
-            (event) {
-          if (event is Map) {
-            _handleNfcEvent(event);
+        // Check for blocks
+        if (mapData.containsKey('blocks')) {
+          final blocks = mapData['blocks'];
+          if (blocks is List) {
+            print('DEBUG: Blocks found: ${blocks.length}');
           }
-        },
-        onError: (error) {
-          print("Event channel error: $error");
-          _errorMessage = "NFC communication error";
-          notifyListeners();
-        },
-      );
-    } catch (e) {
-      print("Failed to setup event listener: $e");
+        }
+
+        _cardData = mapData;
+        _isLoading = false;
+        notifyListeners();
+
+      } catch (e) {
+        print('DEBUG: Error processing NFC data: $e');
+        print('DEBUG: Raw data: $data');
+        _errorMessage = 'Error processing tag data: $e';
+        _isLoading = false;
+        notifyListeners();
+      }
+    }, onError: (error) {
+      print('DEBUG: NFC Stream error: $error');
+      _errorMessage = error.toString();
+      _isLoading = false;
+      notifyListeners();
+    }, onDone: () {
+      print('DEBUG: NFC Stream closed');
+    });
+  }
+
+// Helper method to safely convert platform data
+  Map<String, dynamic> _convertData(dynamic data) {
+    if (data is Map<String, dynamic>) {
+      return data;
+    } else if (data is Map) {
+      // Convert Map<Object?, Object?> to Map<String, dynamic>
+      final result = <String, dynamic>{};
+      data.forEach((key, value) {
+        final stringKey = key.toString();
+        result[stringKey] = _convertValue(value);
+      });
+      return result;
+    } else {
+      return {'error': 'Invalid data format: ${data.runtimeType}'};
     }
   }
 
-  void _handleNfcEvent(Map event) {
-    print("Received NFC event: ${event.keys}");
-
-    if (event.containsKey('error')) {
-      _errorMessage = event['error'];
-      notifyListeners();
-    } else if (event.containsKey('uid')) {
-      // Card scanned successfully
-      _lastScannedUid = event['uid'] ?? '';
-      _cardData = Map<String, dynamic>.from(event);
-      _errorMessage = '';
-
-      print("Card scanned: UID=$_lastScannedUid, sectors: ${event['sectorCount']}");
-      notifyListeners();
+// Recursively convert values
+  dynamic _convertValue(dynamic value) {
+    if (value is Map) {
+      return _convertData(value);
+    } else if (value is List) {
+      return value.map(_convertValue).toList();
+    } else {
+      return value;
     }
   }
 
-  Future<void> startScan() async {
+  Stream<dynamic> get tagStream => _tagStream ?? const Stream.empty();
+
+  // Start scanning
+  Future<bool> startScan() async {
     try {
       _isLoading = true;
       _errorMessage = '';
       notifyListeners();
 
-      await platform.invokeMethod('startScan');
-
+      final result = await _channel.invokeMethod('startScan');
       _isLoading = false;
       notifyListeners();
+      return result == true;
     } on PlatformException catch (e) {
+      _errorMessage = e.message ?? 'Unknown error';
       _isLoading = false;
-      _errorMessage = "Scan failed: ${e.message}";
       notifyListeners();
+      return false;
     }
   }
 
-  Future<void> writeData(String data, bool isHex, int sector, int block) async {
-    try {
-      _isLoading = true;
-      notifyListeners();
+// Get blocks from card data
+  List<Map<String, dynamic>> getBlocks() {
+    final blocks = _cardData['blocks'];
+    if (blocks is List) {
+      return blocks.whereType<Map>().map((block) {
+        if (block is Map<String, dynamic>) {
+          return block;
+        } else {
+          // Convert Map<dynamic, dynamic> to Map<String, dynamic>
+          return Map<String, dynamic>.fromEntries(
+              block.entries.map((entry) =>
+                  MapEntry(entry.key.toString(), entry.value)
+              )
+          );
+        }
+      }).toList();
+    }
+    return [];
+  }
 
-      final result = await platform.invokeMethod('writeData', {
-        'data': data,
-        'isHex': isHex,
+// Get key info from card data
+  List<Map<String, dynamic>> getKeyInfo() {
+    final keyInfo = _cardData['keyInfo'];
+    if (keyInfo is List) {
+      return keyInfo.whereType<Map>().map((info) {
+        if (info is Map<String, dynamic>) {
+          return info;
+        } else {
+          // Convert Map<dynamic, dynamic> to Map<String, dynamic>
+          return Map<String, dynamic>.fromEntries(
+              info.entries.map((entry) =>
+                  MapEntry(entry.key.toString(), entry.value)
+              )
+          );
+        }
+      }).toList();
+    }
+    return [];
+  }
+
+// Get card info by key
+  String getCardInfo(String key, String defaultValue) {
+    final value = _cardData[key];
+    return value?.toString() ?? defaultValue;
+  }
+
+// Get card info as int
+  int getCardInfoInt(String key, int defaultValue) {
+    final value = _cardData[key];
+    if (value is int) return value;
+    if (value is double) return value.toInt();
+    if (value is String) return int.tryParse(value) ?? defaultValue;
+    if (value is num) return value.toInt();
+    return defaultValue;
+  }
+
+  // Set custom key
+  Future<bool> setCustomKey(int sector, String keyType, String key) async {
+    try {
+      final result = await _channel.invokeMethod('setSectorKey', {
         'sector': sector,
-        'block': block,
+        'keyType': keyType,
+        'key': key,
       });
 
-      _isLoading = false;
-      if (result != true) {
-        throw Exception('Write failed');
+      if (result == true) {
+        _customKeys['${keyType}_$sector'] = key;
+        notifyListeners();
       }
-
-      // Re-read the card to show updated data
-      await Future.delayed(const Duration(milliseconds: 500));
-      await startScan();
-
-      notifyListeners();
+      return result == true;
     } on PlatformException catch (e) {
-      _isLoading = false;
-      _errorMessage = "Write failed: ${e.message}";
+      _errorMessage = e.message ?? 'Unknown error';
       notifyListeners();
-      rethrow;
-    } catch (e) {
-      _isLoading = false;
-      _errorMessage = "Write error: ${e.toString()}";
-      notifyListeners();
-      rethrow;
+      return false;
     }
   }
 
-  Future<void> clearAllBlocks() async {
+  // Get key for specific sector and type
+  String? getKeyForSector(int sector, String keyType) {
+    return _customKeys['${keyType}_$sector'];
+  }
+
+  // Remove custom key
+  Future<bool> removeCustomKey(int sector, String keyType) async {
     try {
-      _isLoading = true;
-      notifyListeners();
+      // Clear the key locally
+      _customKeys.remove('${keyType}_$sector');
 
-      final result = await platform.invokeMethod('clearAllBlocks');
+      // Re-set all remaining keys to the plugin
+      await _channel.invokeMethod('clearCustomKeys');
 
-      _isLoading = false;
-      if (result != true) {
-        throw Exception('Clear failed');
+      for (var entry in _customKeys.entries) {
+        final parts = entry.key.split('_');
+        if (parts.length == 2) {
+          final type = parts[0];
+          final sec = int.tryParse(parts[1]) ?? 0;
+          await _channel.invokeMethod('setSectorKey', {
+            'sector': sec,
+            'keyType': type,
+            'key': entry.value,
+          });
+        }
       }
 
       notifyListeners();
+      return true;
     } on PlatformException catch (e) {
-      _isLoading = false;
-      _errorMessage = "Clear failed: ${e.message}";
+      _errorMessage = e.message ?? 'Unknown error';
       notifyListeners();
-      rethrow;
+      return false;
     }
   }
 
-  void updateConfiguration(int sector, String keyA, String keyB, String accessBits) {
-    if (sector >= 1 && sector <= 15) {
-      _sectorConfig[sector] = {
-        'keyA': keyA,
-        'keyB': keyB,
-        'accessBits': accessBits,
-      };
-      notifyListeners();
-    }
-  }
-
-  Map<String, String>? getSectorConfig(int sector) {
-    return _sectorConfig[sector];
-  }
-
-  void clearError() {
-    _errorMessage = '';
-    notifyListeners();
-  }
-
-  void clearCardData() {
-    _cardData = {};
+  // Clear last scanned UID
+  Future<void> clearLastScannedUid() async {
     _lastScannedUid = '';
     notifyListeners();
   }
 
-  @override
-  void dispose() {
-    _eventSubscription?.cancel();
-    super.dispose();
+  // Write data
+  Future<bool> writeData(String data, bool isHex, [int? sector, int? block]) async {
+    try {
+      final Map<String, dynamic> args = {
+        'data': data,
+        'isHex': isHex,
+      };
+
+      if (sector != null && block != null) {
+        args['sector'] = sector;
+        args['block'] = block;
+      }
+
+      final result = await _channel.invokeMethod('writeData', args);
+      return result == true;
+    } on PlatformException catch (e) {
+      _errorMessage = e.message ?? 'Unknown error';
+      return false;
+    }
+  }
+
+  // Configure sector
+  Future<bool> configureSector({
+    required int sector,
+    required String currentKey,
+    required String keyType, // 'A' or 'B'
+    required String newKeyA,
+    required String newKeyB,
+    required String accessBits,
+  }) async {
+    try {
+      final result = await _channel.invokeMethod('configureSector', {
+        'sector': sector,
+        'currentKey': currentKey,
+        'keyType': keyType,
+        'newKeyA': newKeyA,
+        'newKeyB': newKeyB,
+        'accessBits': accessBits,
+      });
+
+      if (result == true) {
+        // Save the new key A for future use
+        _customKeys['A_$sector'] = newKeyA;
+        notifyListeners();
+      }
+
+      return result == true;
+    } on PlatformException catch (e) {
+      _errorMessage = e.message ?? 'Unknown error';
+      return false;
+    }
+  }
+
+  // Get custom keys from plugin
+  Future<Map<String, String>> getCustomKeys() async {
+    try {
+      final result = await _channel.invokeMethod('getCustomKeys');
+      _customKeys = Map<String, String>.from(result ?? {});
+      notifyListeners();
+      return _customKeys;
+    } on PlatformException catch (e) {
+      _errorMessage = e.message ?? 'Unknown error';
+      return {};
+    }
+  }
+
+  // Clear all custom keys
+  Future<bool> clearCustomKeys() async {
+    try {
+      final result = await _channel.invokeMethod('clearCustomKeys');
+      if (result == true) {
+        _customKeys.clear();
+        notifyListeners();
+      }
+      return result == true;
+    } on PlatformException catch (e) {
+      _errorMessage = e.message ?? 'Unknown error';
+      return false;
+    }
+  }
+
+  // Read with specific keys
+  Future<bool> readWithKeys(Map<String, String> keys) async {
+    try {
+      final result = await _channel.invokeMethod('readWithKeys', {'keys': keys});
+      return result == true;
+    } on PlatformException catch (e) {
+      _errorMessage = e.message ?? 'Unknown error';
+      return false;
+    }
+  }
+
+  // Check if method exists
+  Future<bool> hasMethod(String methodName) async {
+    try {
+      await _channel.invokeMethod(methodName, {});
+      return true;
+    } on PlatformException catch (e) {
+      if (e.code == 'notImplemented') {
+        return false;
+      }
+      return true;
+    }
   }
 }
