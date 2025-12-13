@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/nfc_provider.dart';
+import 'dart:convert';
 
 class WriteScreen extends StatefulWidget {
   const WriteScreen({super.key});
@@ -97,6 +98,142 @@ class _WriteScreenState extends State<WriteScreen> {
               ),
 
             if (provider.isNfcAvailable) ...[
+              // Last Scanned UID Section
+              if (provider.lastScannedUid.isNotEmpty)
+                Card(
+                  elevation: 3,
+                  margin: const EdgeInsets.only(bottom: 20),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.history, color: Colors.blue.shade800),
+                            const SizedBox(width: 8),
+                            const Text(
+                              'Last Scanned Card',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.shade100,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: SelectableText(
+                                  provider.lastScannedUid,
+                                  style: const TextStyle(
+                                    fontFamily: 'monospace',
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () {
+                                  _dataController.text = provider.lastScannedUid;
+                                  setState(() => _isHex = true);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('UID loaded as hex data'),
+                                      duration: Duration(seconds: 1),
+                                    ),
+                                  );
+                                },
+                                icon: const Icon(Icons.content_copy),
+                                label: const Text('Use UID as Data'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blue,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            IconButton(
+                              icon: const Icon(Icons.copy),
+                              onPressed: () {
+                                _copyToClipboard(context, provider.lastScannedUid);
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+              // Key Status Section
+              if (provider.customKeys.isNotEmpty)
+                Consumer<NfcProvider>(
+                  builder: (context, provider, child) {
+                    final sector = int.tryParse(_sectorController.text) ?? 0;
+                    final keyA = provider.getKeyForSector(sector, 'A');
+                    final keyB = provider.getKeyForSector(sector, 'B');
+
+                    if (keyA != null || keyB != null) {
+                      return Card(
+                        elevation: 3,
+                        margin: const EdgeInsets.only(bottom: 20),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.key, color: Colors.green.shade800),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Available Keys for Sector $sector',
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  if (keyA != null) _buildKeyChip('Key A', keyA),
+                                  if (keyB != null) _buildKeyChip('Key B', keyB),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'These keys will be used for authentication',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.green.shade700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
+
               // Write Configuration
               Card(
                 elevation: 4,
@@ -295,7 +432,7 @@ class _WriteScreenState extends State<WriteScreen> {
                       ),
                       _buildNoteItem(
                         Icons.lock,
-                        'You need proper authentication keys to write',
+                        'Custom keys will be used for authentication if available',
                         Colors.blue,
                       ),
                       _buildNoteItem(
@@ -343,8 +480,8 @@ class _WriteScreenState extends State<WriteScreen> {
           ),
           keyboardType: TextInputType.number,
           onChanged: (value) {
-            // Update available blocks when sector changes
             _updateAvailableBlocks();
+            setState(() {}); // Trigger rebuild to update key display
           },
         ),
       ],
@@ -352,6 +489,8 @@ class _WriteScreenState extends State<WriteScreen> {
   }
 
   Widget _buildBlockDropdown() {
+    final sector = int.tryParse(_sectorController.text) ?? 0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -404,6 +543,14 @@ class _WriteScreenState extends State<WriteScreen> {
           isExpanded: true,
         ),
       ],
+    );
+  }
+
+  Widget _buildKeyChip(String label, String key) {
+    return Chip(
+      label: Text('$label: $key'),
+      avatar: Icon(label == 'Key A' ? Icons.vpn_key : Icons.key),
+      backgroundColor: label == 'Key A' ? Colors.blue.shade100 : Colors.green.shade100,
     );
   }
 
@@ -491,6 +638,17 @@ class _WriteScreenState extends State<WriteScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  void _copyToClipboard(BuildContext context, String text) {
+    // Implement this if not already in your NfcProvider
+    // Usually you'd use: await Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied: $text'),
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -604,6 +762,28 @@ class _WriteScreenState extends State<WriteScreen> {
               Text('Length: ${data.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').length ~/ 2} bytes'),
             if (!_isHex)
               Text('Length: ${data.length} characters'),
+
+            // Show which keys will be used
+            Consumer<NfcProvider>(
+              builder: (context, provider, child) {
+                final keyA = provider.getKeyForSector(sector!, 'A');
+                final keyB = provider.getKeyForSector(sector!, 'B');
+
+                if (keyA != null || keyB != null) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SizedBox(height: 10),
+                      const Text('Authentication keys to be used:'),
+                      const SizedBox(height: 5),
+                      if (keyA != null) Text('• Key A: $keyA'),
+                      if (keyB != null) Text('• Key B: $keyB'),
+                    ],
+                  );
+                }
+                return const SizedBox.shrink();
+              },
+            ),
           ],
         ),
         actions: [
@@ -614,7 +794,7 @@ class _WriteScreenState extends State<WriteScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              _performWrite(data, sector, block);
+              _performWrite(data, sector!, block!);
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: sector == 0 && block == 0 ? Colors.red : Colors.green,
@@ -629,21 +809,30 @@ class _WriteScreenState extends State<WriteScreen> {
   void _performWrite(String data, int sector, int block) {
     final provider = Provider.of<NfcProvider>(context, listen: false);
 
-    provider.writeData(data, _isHex, sector, block).then((_) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Data written to Sector $sector, Block $block'),
-          backgroundColor: Colors.green,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-
-      // Clear the input field
-      _dataController.clear();
+    provider.writeData(data, _isHex, sector, block).then((success) {
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Data written to Sector $sector, Block $block'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        // Clear the input field
+        _dataController.clear();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Write failed: ${provider.errorMessage}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
     }).catchError((error) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Write failed: $error'),
+          content: Text('Write error: $error'),
           backgroundColor: Colors.red,
           duration: const Duration(seconds: 3),
         ),

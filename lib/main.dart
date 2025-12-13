@@ -10,8 +10,10 @@ import 'providers/nfc_provider.dart';
 
 void main() {
   runApp(
-    ChangeNotifierProvider(
-      create: (context) => NfcProvider(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => NfcProvider()),
+      ],
       child: const MyApp(),
     ),
   );
