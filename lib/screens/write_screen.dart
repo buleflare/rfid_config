@@ -1,7 +1,9 @@
+import 'package:convert/convert.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/nfc_provider.dart';
-import 'dart:convert';
+import 'dart:convert' as convert;
 
 class WriteScreen extends StatefulWidget {
   const WriteScreen({super.key});
@@ -14,10 +16,23 @@ class _WriteScreenState extends State<WriteScreen> {
   final _dataController = TextEditingController();
   final _sectorController = TextEditingController(text: '0');
   final _blockController = TextEditingController(text: '1');
+  final _keyAController = TextEditingController(text: 'FFFFFFFFFFFF');
+  final _keyBController = TextEditingController(text: 'FFFFFFFFFFFF');
   bool _isHex = false;
+  bool _useCustomKeys = false;
 
   // Store available blocks for each sector
   List<int> _availableBlocks = [1, 2]; // Default for sector 0
+
+  bool _isValidHex(String input) {
+    if (input.isEmpty) return false;
+    final cleanInput = input.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
+    if (cleanInput.length != 12) return false;
+    return RegExp(r'^[0-9A-Fa-f]{12}$').hasMatch(cleanInput);
+  }
+
+  // Add the isValidKey method (for consistency with your existing code)
+
 
   @override
   void initState() {
@@ -25,6 +40,25 @@ class _WriteScreenState extends State<WriteScreen> {
     // Listen for sector changes
     _sectorController.addListener(_updateAvailableBlocks);
     _updateAvailableBlocks();
+
+    // Load existing keys if available for sector 0
+    _loadExistingKeys();
+  }
+
+  // Load existing keys for the current sector
+  void _loadExistingKeys() {
+    final provider = Provider.of<NfcProvider>(context, listen: false);
+    final sector = int.tryParse(_sectorController.text) ?? 0;
+
+    final keyA = provider.getKeyForSector(sector, 'A');
+    final keyB = provider.getKeyForSector(sector, 'B');
+
+    if (keyA != null) {
+      _keyAController.text = keyA;
+    }
+    if (keyB != null) {
+      _keyBController.text = keyB;
+    }
   }
 
   // Update available blocks based on selected sector
@@ -51,7 +85,39 @@ class _WriteScreenState extends State<WriteScreen> {
       if (!_availableBlocks.contains(currentBlock)) {
         _blockController.text = _availableBlocks.first.toString();
       }
+
+      // Load keys for the new sector
+      _loadExistingKeys();
     });
+  }
+
+  // Validate hex key input
+// Replace this method:
+  bool _isValidKey(String key) {
+    if (key.isEmpty) return false;
+    final cleanKey = key.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
+    if (cleanKey.length != 12) return false;
+    return RegExp(r'^[0-9A-Fa-f]{12}$').hasMatch(cleanKey);
+  }
+
+// With this method that properly validates hex:
+  bool _isValidHexKey(String key) {
+    if (key.isEmpty) return false;
+
+    // Clean the key - remove any non-hex characters
+    final cleanKey = key.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+
+    // Check length
+    if (cleanKey.length != 12) return false;
+
+    // Check if it's valid hex
+    try {
+      // Try to parse as hex
+      final bytes = hex.decode(cleanKey);
+      return bytes.length == 6; // 6 bytes = 12 hex chars
+    } catch (e) {
+      return false;
+    }
   }
 
   @override
@@ -148,7 +214,8 @@ class _WriteScreenState extends State<WriteScreen> {
                             Expanded(
                               child: ElevatedButton.icon(
                                 onPressed: () {
-                                  _dataController.text = provider.lastScannedUid;
+                                  _dataController.text =
+                                      provider.lastScannedUid;
                                   setState(() => _isHex = true);
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
@@ -168,7 +235,8 @@ class _WriteScreenState extends State<WriteScreen> {
                             IconButton(
                               icon: const Icon(Icons.copy),
                               onPressed: () {
-                                _copyToClipboard(context, provider.lastScannedUid);
+                                _copyToClipboard(
+                                    context, provider.lastScannedUid);
                               },
                             ),
                           ],
@@ -179,60 +247,126 @@ class _WriteScreenState extends State<WriteScreen> {
                 ),
 
               // Key Status Section
-              if (provider.customKeys.isNotEmpty)
-                Consumer<NfcProvider>(
-                  builder: (context, provider, child) {
-                    final sector = int.tryParse(_sectorController.text) ?? 0;
-                    final keyA = provider.getKeyForSector(sector, 'A');
-                    final keyB = provider.getKeyForSector(sector, 'B');
+// Custom Keys Toggle Section - ALWAYS VISIBLE
+              Card(
+                elevation: 3,
+                margin: const EdgeInsets.only(bottom: 20),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.vpn_key, color: Colors.orange.shade800),
+                          const SizedBox(width: 8),
+                          const Text(
+                            'Authentication Keys',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
 
-                    if (keyA != null || keyB != null) {
-                      return Card(
-                        elevation: 3,
-                        margin: const EdgeInsets.only(bottom: 20),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(Icons.key, color: Colors.green.shade800),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    'Available Keys for Sector $sector',
-                                    style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
+                      // Show saved keys if available
+                      Consumer<NfcProvider>(
+                        builder: (context, provider, child) {
+                          final sector = int.tryParse(_sectorController.text) ?? 0;
+                          final keyA = provider.getKeyForSector(sector, 'A');
+                          final keyB = provider.getKeyForSector(sector, 'B');
+
+                          if (keyA != null || keyB != null) {
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Saved keys for this sector:',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                                ),
+                                const SizedBox(height: 8),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    if (keyA != null) _buildKeyChip('Key A', keyA),
+                                    if (keyB != null) _buildKeyChip('Key B', keyB),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                              ],
+                            );
+                          }
+                          return const SizedBox.shrink();
+                        },
+                      ),
+
+                      // Custom keys toggle
+                      Row(
+                        children: [
+                          Checkbox(
+                            value: _useCustomKeys,
+                            onChanged: (value) {
+                              setState(() {
+                                _useCustomKeys = value ?? false;
+                              });
+                            },
+                          ),
+                          const Text('Use custom keys for this write'),
+                        ],
+                      ),
+
+                      if (_useCustomKeys)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 12),
+                            _buildKeyInputField(
+                              controller: _keyAController,
+                              label: 'Custom Key A (6 bytes, 12 hex chars)',
+                              hintText: 'FFFFFFFFFFFF',
+                              isKeyA: true,
+                            ),
+                            const SizedBox(height: 12),
+                            _buildKeyInputField(
+                              controller: _keyBController,
+                              label: 'Custom Key B (6 bytes, 12 hex chars)',
+                              hintText: 'FFFFFFFFFFFF',
+                              isKeyA: false,
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Icon(Icons.info, color: Colors.blue.shade800, size: 16),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Keys must be 12 hex characters (6 bytes). Leave empty to use default FFFFFFFFFFFF.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey.shade700,
                                     ),
                                   ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: [
-                                  if (keyA != null) _buildKeyChip('Key A', keyA),
-                                  if (keyB != null) _buildKeyChip('Key B', keyB),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'These keys will be used for authentication',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.green.shade700,
                                 ),
-                              ),
-                            ],
-                          ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 8,
+                              children: [
+                                _buildExampleKeyChip('Default Key', 'FFFFFFFFFFFF'),
+                                _buildExampleKeyChip('All Zeros', '000000000000'),
+                                _buildExampleKeyChip('All As', 'AAAAAAAAAAAA'),
+                              ],
+                            ),
+                          ],
                         ),
-                      );
-                    }
-                    return const SizedBox.shrink();
-                  },
+                    ],
+                  ),
                 ),
+              ),
 
               // Write Configuration
               Card(
@@ -294,7 +428,9 @@ class _WriteScreenState extends State<WriteScreen> {
                         controller: _dataController,
                         maxLines: 4,
                         decoration: InputDecoration(
-                          labelText: _isHex ? 'Hex Data (32 chars max)' : 'Text Data (16 chars max)',
+                          labelText: _isHex
+                              ? 'Hex Data (32 chars max)'
+                              : 'Text Data (16 chars max)',
                           hintText: _isHex
                               ? 'Enter 32 hex characters (16 bytes)'
                               : 'Enter text to write (max 16 characters)',
@@ -389,12 +525,23 @@ class _WriteScreenState extends State<WriteScreen> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          _buildExampleChip('Hello World', 'Hello World!', false),
-                          _buildExampleChip('All Zeros', '00000000000000000000000000000000', true),
-                          _buildExampleChip('All Fs', 'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', true),
-                          _buildExampleChip('Test Data', '0123456789ABCDEF0123456789ABCDEF', true),
-                          _buildExampleChip('UID Reference', 'Copy UID from read screen', false),
-                          _buildExampleChip('Empty Block', '00000000000000000000000000000000', true),
+                          _buildExampleChip(
+                              'Hello World', 'Hello World!', false),
+                          _buildExampleChip(
+                              'All Zeros', '00000000000000000000000000000000',
+                              true),
+                          _buildExampleChip(
+                              'All Fs', 'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF',
+                              true),
+                          _buildExampleChip(
+                              'Test Data', '0123456789ABCDEF0123456789ABCDEF',
+                              true),
+                          _buildExampleChip(
+                              'UID Reference', 'Copy UID from read screen',
+                              false),
+                          _buildExampleChip(
+                              'Empty Block', '00000000000000000000000000000000',
+                              true),
                         ],
                       ),
                     ],
@@ -444,6 +591,11 @@ class _WriteScreenState extends State<WriteScreen> {
                         Icons.warning,
                         'Writing wrong data can corrupt the card',
                         Colors.orange,
+                      ),
+                      _buildNoteItem(
+                        Icons.key,
+                        'Use FFFFFFFFFFFF as default key for most cards',
+                        Colors.amber,
                       ),
                     ],
                   ),
@@ -528,7 +680,8 @@ class _WriteScreenState extends State<WriteScreen> {
               child: Text(
                 'Block $block ($blockType)',
                 style: TextStyle(
-                  color: blockType.contains('Read-Only') || blockType == 'Trailer'
+                  color: blockType.contains('Read-Only') ||
+                      blockType == 'Trailer'
                       ? Colors.grey
                       : Colors.black,
                 ),
@@ -546,11 +699,88 @@ class _WriteScreenState extends State<WriteScreen> {
     );
   }
 
+  Widget _buildKeyInputField({
+    required TextEditingController controller,
+    required String label,
+    required String hintText,
+    required bool isKeyA,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(height: 4),
+        TextField(
+          controller: controller,
+          decoration: InputDecoration(
+            hintText: hintText,
+            prefixIcon: Icon(isKeyA ? Icons.vpn_key : Icons.key),
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.clear),
+              onPressed: () {
+                controller.text = 'FFFFFFFFFFFF';
+                setState(() {});
+              },
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            filled: true,
+            fillColor: _isValidHexKey(controller.text)
+                ? Colors.green.shade50
+                : Colors.grey.shade50,
+            errorText: controller.text.isNotEmpty &&
+                !_isValidHexKey(controller.text)
+                ? 'Invalid key format (12 hex chars like AABBCCDDEEFF)'
+                : null,
+          ),
+          style: const TextStyle(
+            fontFamily: 'monospace',
+            letterSpacing: 1.2,
+          ),
+          keyboardType: TextInputType.text,
+          textCapitalization: TextCapitalization.characters,
+          onChanged: (value) {
+            setState(() {});
+          },
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9A-Fa-f]')),
+            LengthLimitingTextInputFormatter(12),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget _buildKeyChip(String label, String key) {
     return Chip(
       label: Text('$label: $key'),
       avatar: Icon(label == 'Key A' ? Icons.vpn_key : Icons.key),
-      backgroundColor: label == 'Key A' ? Colors.blue.shade100 : Colors.green.shade100,
+      backgroundColor: label == 'Key A' ? Colors.blue.shade100 : Colors.green
+          .shade100,
+    );
+  }
+
+  Widget _buildExampleKeyChip(String label, String key) {
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _keyAController.text = key;
+          _keyBController.text = key;
+        });
+      },
+      child: Chip(
+        label: Text(label),
+        avatar: const Icon(Icons.key, size: 16),
+        backgroundColor: Colors.amber.shade100,
+        labelStyle: const TextStyle(fontSize: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      ),
     );
   }
 
@@ -643,8 +873,6 @@ class _WriteScreenState extends State<WriteScreen> {
   }
 
   void _copyToClipboard(BuildContext context, String text) {
-    // Implement this if not already in your NfcProvider
-    // Usually you'd use: await Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Copied: $text'),
@@ -715,8 +943,43 @@ class _WriteScreenState extends State<WriteScreen> {
       }
     }
 
+    // Prepare custom keys if enabled
+    String? customKeyA;
+    String? customKeyB;
+
+    if (_useCustomKeys) {
+      final keyAText = _keyAController.text.trim();
+      final keyBText = _keyBController.text.trim();
+
+      // Validate keys if provided (they can be empty to use default)
+      if (keyAText.isNotEmpty && !_isValidHex(keyAText)) {
+        _showError(
+            'Invalid Key A format. Must be exactly 12 hex characters (0-9, A-F).');
+        return;
+      }
+
+      if (keyBText.isNotEmpty && !_isValidHex(keyBText)) {
+        _showError(
+            'Invalid Key B format. Must be exactly 12 hex characters (0-9, A-F).');
+        return;
+      }
+
+      // Use provided keys or null if empty
+      customKeyA = keyAText.isEmpty ? null : keyAText.toUpperCase();
+      customKeyB = keyBText.isEmpty ? null : keyBText.toUpperCase();
+
+      // If both are empty, don't send custom keys
+      if (customKeyA == null && customKeyB == null) {
+        customKeyA = null;
+        customKeyB = null;
+      }
+    }
+
+    // Validate data length and format
     if (_isHex) {
-      final cleanHex = data.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+      final cleanHex = data
+          .replaceAll(RegExp(r'[^0-9A-Fa-f]'), '')
+          .toUpperCase();
       if (cleanHex.isEmpty) {
         _showError('Invalid hex data');
         return;
@@ -739,77 +1002,111 @@ class _WriteScreenState extends State<WriteScreen> {
     // Show confirmation dialog
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Confirm Write'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Sector: $sector, Block: $block'),
-            if (sector == 0 && block == 0)
-              const Text(
-                '⚠️ WARNING: Manufacturer block!',
-                style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+      builder: (context) =>
+          AlertDialog(
+            title: const Text('Confirm Write'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Sector: $sector, Block: $block'),
+                if (sector == 0 && block == 0)
+                  const Text(
+                    '⚠️ WARNING: Manufacturer block!',
+                    style: TextStyle(
+                        color: Colors.red, fontWeight: FontWeight.bold),
+                  ),
+                const SizedBox(height: 10),
+                const Text('Data:'),
+                SelectableText(
+                  data.length > 100 ? '${data.substring(0, 100)}...' : data,
+                  style: const TextStyle(fontFamily: 'monospace'),
+                ),
+                const SizedBox(height: 10),
+                if (_isHex)
+                  Text('Length: ${data
+                      .replaceAll(RegExp(r'[^0-9A-Fa-f]'), '')
+                      .length ~/ 2} bytes'),
+                if (!_isHex)
+                  Text('Length: ${data.length} characters'),
+
+                // Show which keys will be used
+                Consumer<NfcProvider>(
+                  builder: (context, provider, child) {
+                    final savedKeyA = provider.getKeyForSector(sector!, 'A');
+                    final savedKeyB = provider.getKeyForSector(sector!, 'B');
+
+                    final displayKeyA = _useCustomKeys && customKeyA != null
+                        ? customKeyA
+                        : (savedKeyA ?? 'FFFFFFFFFFFF');
+                    final displayKeyB = _useCustomKeys && customKeyB != null
+                        ? customKeyB
+                        : (savedKeyB ?? 'FFFFFFFFFFFF');
+
+                    final keyASource = _useCustomKeys && customKeyA != null
+                        ? '(Custom)'
+                        : (savedKeyA != null ? '(Saved)' : '(Default)');
+                    final keyBSource = _useCustomKeys && customKeyB != null
+                        ? '(Custom)'
+                        : (savedKeyB != null ? '(Saved)' : '(Default)');
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 10),
+                        const Text('Authentication keys to be used:'),
+                        const SizedBox(height: 5),
+                        Text('• Key A: $displayKeyA $keyASource'),
+                        Text('• Key B: $displayKeyB $keyBSource'),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
               ),
-            const SizedBox(height: 10),
-            const Text('Data:'),
-            SelectableText(
-              data.length > 100 ? '${data.substring(0, 100)}...' : data,
-              style: const TextStyle(fontFamily: 'monospace'),
-            ),
-            const SizedBox(height: 10),
-            if (_isHex)
-              Text('Length: ${data.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').length ~/ 2} bytes'),
-            if (!_isHex)
-              Text('Length: ${data.length} characters'),
-
-            // Show which keys will be used
-            Consumer<NfcProvider>(
-              builder: (context, provider, child) {
-                final keyA = provider.getKeyForSector(sector!, 'A');
-                final keyB = provider.getKeyForSector(sector!, 'B');
-
-                if (keyA != null || keyB != null) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SizedBox(height: 10),
-                      const Text('Authentication keys to be used:'),
-                      const SizedBox(height: 5),
-                      if (keyA != null) Text('• Key A: $keyA'),
-                      if (keyB != null) Text('• Key B: $keyB'),
-                    ],
-                  );
-                }
-                return const SizedBox.shrink();
-              },
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _performWrite(data, sector!, block!, customKeyA, customKeyB);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: sector == 0 && block == 0
+                      ? Colors.red
+                      : Colors.green,
+                ),
+                child: const Text('Write'),
+              ),
+            ],
           ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _performWrite(data, sector!, block!);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: sector == 0 && block == 0 ? Colors.red : Colors.green,
-            ),
-            child: const Text('Write'),
-          ),
-        ],
-      ),
     );
-  }
+  } // Missing closing brace was here
 
-  void _performWrite(String data, int sector, int block) {
+  void _performWrite(String data, int sector, int block, String? customKeyA,
+      String? customKeyB) {
     final provider = Provider.of<NfcProvider>(context, listen: false);
 
-    provider.writeData(data, _isHex, sector, block).then((success) {
+    // Validate custom keys if provided
+    if (_useCustomKeys) {
+      if ((customKeyA != null && !_isValidHex(customKeyA)) ||
+          (customKeyB != null && !_isValidHex(customKeyB))) {
+        _showError('Invalid custom key format. Must be 12 hex characters.');
+        return;
+      }
+    }
+
+    provider.writeData(
+      data,
+      _isHex,
+      sector,
+      block,
+      customKeyA: _useCustomKeys ? customKeyA : null,
+      customKeyB: _useCustomKeys ? customKeyB : null,
+    ).then((success) {
       if (success) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -847,14 +1144,5 @@ class _WriteScreenState extends State<WriteScreen> {
         backgroundColor: Colors.red,
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _sectorController.removeListener(_updateAvailableBlocks);
-    _dataController.dispose();
-    _sectorController.dispose();
-    _blockController.dispose();
-    super.dispose();
   }
 }

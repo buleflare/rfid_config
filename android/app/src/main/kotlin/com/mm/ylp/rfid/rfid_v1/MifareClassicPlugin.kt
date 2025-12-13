@@ -1,5 +1,11 @@
 package com.mm.ylp.rfid.rfid_v1
 
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.SharedPreferences
+import org.json.JSONObject
+import io.flutter.plugin.common.MethodCall
+import io.flutter.plugin.common.MethodChannel.Result
 import android.app.Activity
 import android.content.Intent
 import android.nfc.NfcAdapter
@@ -7,8 +13,10 @@ import android.nfc.Tag
 import android.nfc.tech.MifareClassic
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
-import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import android.os.Handler
+import android.os.Looper
+import java.io.IOException
 
 object MifareClassicPlugin {
 
@@ -24,6 +32,12 @@ object MifareClassicPlugin {
     private val lastUsedKeyType = mutableMapOf<Int, String>()
     private val lastUsedKeyHex = mutableMapOf<Int, String>()
 
+    // Storage for card-specific keys
+    private val cardKeys = mutableMapOf<String, MutableMap<String, String>>()
+
+    // Context for storage operations
+    private var applicationContext: Context? = null
+
     // Common default keys (fallback)
     private val commonKeys = arrayOf(
         byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()),
@@ -32,7 +46,16 @@ object MifareClassicPlugin {
         byteArrayOf(0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte())
     )
 
+    fun clearCurrentTag() {
+        currentTag = null
+        isReading = false
+        println("DEBUG: Cleared current tag and reading state")
+    }
+
+    @SuppressLint("StaticFieldLeak")
     fun setup(flutterEngine: FlutterEngine, activity: Activity) {
+        applicationContext = activity.applicationContext
+
         val methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mifare_classic/method")
         val eventChannel = EventChannel(flutterEngine.dartExecutor.binaryMessenger, "mifare_classic/events")
 
@@ -166,7 +189,12 @@ object MifareClassicPlugin {
                         result.error("CONFIG_ERROR", "Configuration failed: ${e.message}", null)
                     }
                 }
-
+                "saveCardKeysToStorage" -> saveCardKeysToStorage(call, result)
+                "loadCardKeysFromStorage" -> loadCardKeysFromStorage(call, result)
+                "setSectorKeyBatch" -> setSectorKeyBatch(call, result)
+                "removeKeyForCard" -> removeKeyForCard(call, result)
+                "clearAllCardKeys" -> clearAllCardKeys(result)
+                "setCustomKeys" -> setCustomKeys(call, result)
                 else -> result.notImplemented()
             }
         }
@@ -182,6 +210,9 @@ object MifareClassicPlugin {
                 println("DEBUG: Event channel listener removed")
             }
         })
+
+        // Load saved keys on setup
+        loadSavedKeysFromStorage()
     }
 
     private fun configureSectorTrailer(
@@ -453,17 +484,43 @@ object MifareClassicPlugin {
             try {
                 // Key format: "A_0" or "B_3" (type_sector)
                 val parts = keyString.split("_")
-                if (parts.size == 2 && hexKey.length == 12) {
+                if (parts.size == 2) {
                     val keyType = parts[0].uppercase()
-                    val sector = parts[1].toInt()
-                    val keyBytes = hexStringToByteArray(hexKey)
+                    val sector = try {
+                        parts[1].toInt()
+                    } catch (e: NumberFormatException) {
+                        println("DEBUG: Invalid sector in key string: $keyString")
+                        return@forEach
+                    }
+
+                    // Clean the hex key
+                    val cleanHex = hexKey.replace("\\s".toRegex(), "").uppercase()
+
+                    // Validate hex key length
+                    if (cleanHex.length != 12) {
+                        println("DEBUG: Invalid key length for $keyString: $cleanHex (expected 12 hex chars)")
+                        return@forEach
+                    }
+
+                    // Validate hex characters
+                    if (!cleanHex.matches(Regex("[0-9A-F]+"))) {
+                        println("DEBUG: Invalid hex characters in key: $cleanHex")
+                        return@forEach
+                    }
+
+                    val keyBytes = hexStringToByteArray(cleanHex)
 
                     if (keyType == "A") {
                         customKeysA[sector] = keyBytes
-                    } else {
+                        println("DEBUG: Set custom Key A for sector $sector: $cleanHex")
+                    } else if (keyType == "B") {
                         customKeysB[sector] = keyBytes
+                        println("DEBUG: Set custom Key B for sector $sector: $cleanHex")
+                    } else {
+                        println("DEBUG: Unknown key type: $keyType")
                     }
-                    println("DEBUG: Parsed key $keyString = $hexKey")
+                } else {
+                    println("DEBUG: Invalid key format: $keyString (expected format: TYPE_SECTOR)")
                 }
             } catch (e: Exception) {
                 println("DEBUG: Failed to parse key $keyString: ${e.message}")
@@ -482,8 +539,8 @@ object MifareClassicPlugin {
             println("DEBUG:   Sector: $sector, Block: $block")
             println("DEBUG:   isHex: $isHex")
             println("DEBUG:   data length: ${data.length}")
-            println("DEBUG:   first 20 chars: ${data.take(20)}")
 
+            // Get mifare instance BEFORE clearing tag
             val mifare = MifareClassic.get(tag) ?: throw Exception("Not a Mifare Classic tag")
 
             try {
@@ -505,30 +562,18 @@ object MifareClassicPlugin {
                     throw Exception("Cannot write to manufacturer block (Sector 0, Block 0)")
                 }
 
-                // Allow writing to trailer blocks but warn
-                val isTrailerBlock = (block == blocksPerSector - 1)
-                if (isTrailerBlock) {
-                    println("DEBUG: Warning: Writing to trailer block - this will change sector keys and access bits")
-                }
-
                 // Convert data to bytes
                 val bytes = if (isHex) {
-                    // Validate hex string
                     val cleanHex = data.replace("\\s".toRegex(), "").uppercase()
-
-                    // Check if string contains only hex characters
                     if (!cleanHex.matches(Regex("[0-9A-F]+"))) {
                         throw Exception("Invalid hex characters. Use only 0-9, A-F.")
                     }
-
                     if (cleanHex.length % 2 != 0) {
                         throw Exception("Invalid hex string length. Must be even number of characters.")
                     }
-
                     if (cleanHex.length > 32) {
                         throw Exception("Hex data too long (max 32 chars = 16 bytes)")
                     }
-
                     try {
                         ByteArray(cleanHex.length / 2) { i ->
                             cleanHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
@@ -543,27 +588,71 @@ object MifareClassicPlugin {
                     data.toByteArray(Charsets.UTF_8)
                 }
 
-                // Check if bytes array is empty
                 if (bytes.isEmpty()) {
                     throw Exception("No data to write")
                 }
 
-                println("DEBUG: Data to write (${bytes.size} bytes): ${bytesToHex(bytes.take(32).toByteArray())}")
+                println("DEBUG: Data to write (${bytes.size} bytes): ${bytesToHex(bytes)}")
 
                 // Prepare block data (16 bytes)
                 val blockData = ByteArray(16) { 0x00 }
                 val bytesToCopy = minOf(16, bytes.size)
-
-                // Copy data to block
                 System.arraycopy(bytes, 0, blockData, 0, bytesToCopy)
 
                 println("DEBUG: Will write to Sector $sector, Block $block")
                 println("DEBUG: Block data: ${bytesToHex(blockData)}")
 
-                // Authenticate sector with tracking
-                val authenticationResult = authenticateSectorWithTracking(mifare, sector)
+                // Authenticate sector
+                println("DEBUG: Attempting to authenticate sector $sector for write")
 
-                if (!authenticationResult.first) {
+                var authenticated = false
+                var usedKeyHex = ""
+
+                // Try custom Key A
+                customKeysA[sector]?.let { key ->
+                    try {
+                        if (mifare.authenticateSectorWithKeyA(sector, key)) {
+                            authenticated = true
+                            usedKeyHex = bytesToHex(key)
+                            println("DEBUG: Sector $sector authenticated with custom Key A: $usedKeyHex")
+                        }
+                    } catch (e: Exception) {
+                        println("DEBUG: Custom Key A failed: ${e.message}")
+                    }
+                }
+
+                // Try custom Key B
+                if (!authenticated) {
+                    customKeysB[sector]?.let { key ->
+                        try {
+                            if (mifare.authenticateSectorWithKeyB(sector, key)) {
+                                authenticated = true
+                                usedKeyHex = bytesToHex(key)
+                                println("DEBUG: Sector $sector authenticated with custom Key B: $usedKeyHex")
+                            }
+                        } catch (e: Exception) {
+                            println("DEBUG: Custom Key B failed: ${e.message}")
+                        }
+                    }
+                }
+
+                // Try common keys
+                if (!authenticated) {
+                    for (commonKey in commonKeys) {
+                        try {
+                            if (mifare.authenticateSectorWithKeyA(sector, commonKey)) {
+                                authenticated = true
+                                usedKeyHex = bytesToHex(commonKey)
+                                println("DEBUG: Sector $sector authenticated with common Key A: $usedKeyHex")
+                                break
+                            }
+                        } catch (e: Exception) {
+                            // Continue
+                        }
+                    }
+                }
+
+                if (!authenticated) {
                     throw Exception("Could not authenticate Sector $sector. Invalid key.")
                 }
 
@@ -578,52 +667,42 @@ object MifareClassicPlugin {
                     mifare.writeBlock(absBlock, blockData)
                     println("DEBUG: Write successful")
 
-                    // Simple verification for data blocks
+                    // Simple verification
                     val verifyData = mifare.readBlock(absBlock)
+                    val isTrailerBlock = (block == blocksPerSector - 1)
 
-                    // Check if this is a trailer block
-                    if (isTrailerBlock) {
-                        // For trailer blocks, we do partial verification
-                        println("DEBUG: Trailer block written - doing partial verification")
-
-                        // Check bytes 6-8 (access bits)
-                        val expectedAccessBits = if (blockData.size >= 9) blockData.copyOfRange(6, 9) else ByteArray(0)
-                        val actualAccessBits = if (verifyData.size >= 9) verifyData.copyOfRange(6, 9) else ByteArray(0)
-
-                        if (expectedAccessBits.isNotEmpty() && actualAccessBits.isNotEmpty() &&
-                            !actualAccessBits.contentEquals(expectedAccessBits)) {
-                            println("DEBUG: Access bits verification failed")
-                            println("DEBUG:   Expected: ${bytesToHex(expectedAccessBits)}")
-                            println("DEBUG:   Got: ${bytesToHex(actualAccessBits)}")
-                            // Don't throw for trailer blocks - Key A might be hidden
-                        } else if (expectedAccessBits.isNotEmpty() && actualAccessBits.isNotEmpty()) {
-                            println("DEBUG: Access bits verified: ${bytesToHex(actualAccessBits)}")
-                        }
-
-                        // Note: Key A (bytes 0-5) might be hidden by access bits
-                        println("DEBUG: Key A may be hidden (reads as zeros) depending on access bits")
-
-                    } else {
-                        // For data blocks, do full verification
+                    if (!isTrailerBlock) {
                         if (!verifyData.contentEquals(blockData)) {
-                            println("DEBUG: Verification FAILED")
-                            println("DEBUG:   Expected: ${bytesToHex(blockData)}")
-                            println("DEBUG:   Got: ${bytesToHex(verifyData)}")
-                            throw Exception("Write verification failed")
+                            println("DEBUG: Verification failed")
+                            println("DEBUG: Expected: ${bytesToHex(blockData)}")
+                            println("DEBUG: Got: ${bytesToHex(verifyData)}")
                         } else {
                             println("DEBUG: Verification OK")
                         }
+                    } else {
+                        println("DEBUG: Trailer block written - skipping full verification")
                     }
 
+                    // Close connection
                     mifare.close()
 
-                    // Read the card again to show updated data
-                    currentTag?.let {
-                        println("DEBUG: Re-reading card to verify write...")
-                        readAllBlocks(it, false)
-                    }
+                    println("DEBUG: Write completed successfully")
 
+                    // Send success immediately
                     result.success(true)
+
+                    // Re-read the card in background
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        try {
+                            // The tag should still be valid after write
+                            if (tag != null) {
+                                println("DEBUG: Re-reading card after write...")
+                                readAllBlocks(tag, false)
+                            }
+                        } catch (e: Exception) {
+                            println("DEBUG: Error in post-write read: ${e.message}")
+                        }
+                    }, 500)
 
                 } catch (e: Exception) {
                     mifare.close()
@@ -639,6 +718,71 @@ object MifareClassicPlugin {
             e.printStackTrace()
             result.error("WRITE_ERROR", e.message, null)
         }
+    }
+
+    // New method for write authentication that uses temporary key maps
+    private fun authenticateSectorForWrite(
+        mifare: MifareClassic,
+        sector: Int,
+        tempKeysA: Map<Int, ByteArray>,
+        tempKeysB: Map<Int, ByteArray>
+    ): Pair<Boolean, String> {
+        println("DEBUG: Attempting to authenticate sector $sector for write")
+
+        // Try custom Key A from temp map
+        tempKeysA[sector]?.let { key ->
+            try {
+                if (mifare.authenticateSectorWithKeyA(sector, key)) {
+                    val keyHex = bytesToHex(key)
+                    println("DEBUG: Sector $sector authenticated with custom Key A: $keyHex")
+                    return Pair(true, keyHex)
+                }
+            } catch (e: Exception) {
+                println("DEBUG: Custom Key A failed: ${e.message}")
+            }
+        }
+
+        // Try custom Key B from temp map
+        tempKeysB[sector]?.let { key ->
+            try {
+                if (mifare.authenticateSectorWithKeyB(sector, key)) {
+                    val keyHex = bytesToHex(key)
+                    println("DEBUG: Sector $sector authenticated with custom Key B: $keyHex")
+                    return Pair(true, keyHex)
+                }
+            } catch (e: Exception) {
+                println("DEBUG: Custom Key B failed: ${e.message}")
+            }
+        }
+
+        // Try common keys for Key A
+        for (key in commonKeys) {
+            try {
+                if (mifare.authenticateSectorWithKeyA(sector, key)) {
+                    val keyHex = bytesToHex(key)
+                    println("DEBUG: Sector $sector authenticated with common Key A: $keyHex")
+                    return Pair(true, keyHex)
+                }
+            } catch (e: Exception) {
+                // Continue to next key
+            }
+        }
+
+        // Try common keys for Key B
+        for (key in commonKeys) {
+            try {
+                if (mifare.authenticateSectorWithKeyB(sector, key)) {
+                    val keyHex = bytesToHex(key)
+                    println("DEBUG: Sector $sector authenticated with common Key B: $keyHex")
+                    return Pair(true, keyHex)
+                }
+            } catch (e: Exception) {
+                // Continue to next key
+            }
+        }
+
+        println("DEBUG: All authentication attempts failed for sector $sector")
+        return Pair(false, "")
     }
 
     fun onNewIntent(activity: Activity, intent: Intent) {
@@ -661,6 +805,16 @@ object MifareClassicPlugin {
         }
     }
 
+    private fun Tag?.isConnected(): Boolean {
+        return try {
+            this?.let {
+                val mifare = MifareClassic.get(it)
+                mifare?.isConnected ?: false
+            } ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     private fun authenticateSectorWithTracking(mifare: MifareClassic, sector: Int): Pair<Boolean, String> {
         println("DEBUG: Attempting to authenticate sector $sector")
@@ -732,183 +886,205 @@ object MifareClassicPlugin {
     private fun readAllBlocks(tag: Tag, useCustomKeysOnly: Boolean = false) {
         try {
             println("DEBUG: Starting readAllBlocks (useCustomKeysOnly: $useCustomKeysOnly)")
+
             val mifare = MifareClassic.get(tag) ?: return
 
-            val fullUidBytes = tag.id
-            val fullUidHex = bytesToHex(fullUidBytes)
-            val uidToSend = if (fullUidBytes.size >= 7) {
-                bytesToHex(fullUidBytes.copyOfRange(0, 7))
-            } else {
-                fullUidHex
-            }
-
-            println("DEBUG: Tag UID: $uidToSend")
-
-            mifare.connect()
-            println("DEBUG: Connected to tag")
-
-            val resultList = mutableListOf<Map<String, Any>>()
-            val keyInfoList = mutableListOf<Map<String, Any>>()
-            var successfulSectors = 0
-
-            for (sector in 0 until mifare.sectorCount) {
-                println("DEBUG: Processing sector $sector")
-
-                var authenticated = false
-                var usedKeyType = ""
-                var usedKeyHex = ""
-
-                if (!useCustomKeysOnly) {
-                    // Normal read: try all keys
-                    val authResult = authenticateSectorWithTracking(mifare, sector)
-                    authenticated = authResult.first
-                    usedKeyHex = authResult.second
-                    usedKeyType = lastUsedKeyType[sector] ?: ""
+            try {
+                val fullUidBytes = tag.id
+                val fullUidHex = bytesToHex(fullUidBytes)
+                val uidToSend = if (fullUidBytes.size >= 7) {
+                    bytesToHex(fullUidBytes.copyOfRange(0, 7))
                 } else {
-                    // Read with custom keys only
-                    var tempAuthenticated = false
+                    fullUidHex
+                }
 
-                    // Try custom Key A
-                    customKeysA[sector]?.let { key ->
-                        try {
-                            tempAuthenticated = mifare.authenticateSectorWithKeyA(sector, key)
-                            if (tempAuthenticated) {
-                                usedKeyType = "A"
-                                usedKeyHex = bytesToHex(key)
-                                lastUsedKeyType[sector] = "A"
-                                lastUsedKeyHex[sector] = usedKeyHex
-                            }
-                        } catch (e: Exception) { }
+                println("DEBUG: Tag UID: $uidToSend")
+
+                // Try to connect with retry
+                var connected = false
+                var retryCount = 0
+                while (!connected && retryCount < 3) {
+                    try {
+                        mifare.connect()
+                        connected = true
+                        println("DEBUG: Connected to tag (attempt ${retryCount + 1})")
+                    } catch (e: IOException) {
+                        retryCount++
+                        println("DEBUG: Connection attempt $retryCount failed: ${e.message}")
+                        if (retryCount >= 3) {
+                            throw e
+                        }
+                        Thread.sleep(100) // Wait before retry
                     }
+                }
 
-                    // Try custom Key B
-                    if (!tempAuthenticated) {
-                        customKeysB[sector]?.let { key ->
+                val resultList = mutableListOf<Map<String, Any>>()
+                val keyInfoList = mutableListOf<Map<String, Any>>()
+                var successfulSectors = 0
+
+                for (sector in 0 until mifare.sectorCount) {
+                    println("DEBUG: Processing sector $sector")
+
+                    var authenticated = false
+                    var usedKeyType = ""
+                    var usedKeyHex = ""
+
+                    if (!useCustomKeysOnly) {
+                        val authResult = authenticateSectorWithTracking(mifare, sector)
+                        authenticated = authResult.first
+                        usedKeyHex = authResult.second
+                        usedKeyType = lastUsedKeyType[sector] ?: ""
+                    } else {
+                        var tempAuthenticated = false
+
+                        customKeysA[sector]?.let { key ->
                             try {
-                                tempAuthenticated = mifare.authenticateSectorWithKeyB(sector, key)
+                                tempAuthenticated = mifare.authenticateSectorWithKeyA(sector, key)
                                 if (tempAuthenticated) {
-                                    usedKeyType = "B"
+                                    usedKeyType = "A"
                                     usedKeyHex = bytesToHex(key)
-                                    lastUsedKeyType[sector] = "B"
+                                    lastUsedKeyType[sector] = "A"
                                     lastUsedKeyHex[sector] = usedKeyHex
                                 }
                             } catch (e: Exception) { }
                         }
+
+                        if (!tempAuthenticated) {
+                            customKeysB[sector]?.let { key ->
+                                try {
+                                    tempAuthenticated = mifare.authenticateSectorWithKeyB(sector, key)
+                                    if (tempAuthenticated) {
+                                        usedKeyType = "B"
+                                        usedKeyHex = bytesToHex(key)
+                                        lastUsedKeyType[sector] = "B"
+                                        lastUsedKeyHex[sector] = usedKeyHex
+                                    }
+                                } catch (e: Exception) { }
+                            }
+                        }
+
+                        authenticated = tempAuthenticated
                     }
 
-                    authenticated = tempAuthenticated
-                }
+                    if (authenticated) {
+                        successfulSectors++
 
-                if (authenticated) {
-                    successfulSectors++
+                        keyInfoList.add(hashMapOf(
+                            "sector" to sector,
+                            "keyType" to usedKeyType,
+                            "key" to usedKeyHex,
+                            "authenticated" to true
+                        ))
 
-                    // Store key info for this sector
-                    keyInfoList.add(hashMapOf(
-                        "sector" to sector,
-                        "keyType" to usedKeyType,
-                        "key" to usedKeyHex,
-                        "authenticated" to true
-                    ))
+                        val startBlock = mifare.sectorToBlock(sector)
+                        val blockCount = mifare.getBlockCountInSector(sector)
 
-                    val startBlock = mifare.sectorToBlock(sector)
-                    val blockCount = mifare.getBlockCountInSector(sector)
+                        for (block in 0 until blockCount) {
+                            val absBlock = startBlock + block
+                            val isTrailer = (block == blockCount - 1)
 
-                    for (block in 0 until blockCount) {
-                        val absBlock = startBlock + block
-                        val isTrailer = (block == blockCount - 1)
+                            try {
+                                val data = mifare.readBlock(absBlock)
+                                val hexStr = bytesToHex(data)
+                                val textStr = data.map { if (it in 32..126) it.toChar() else '.' }.joinToString("")
 
-                        try {
-                            val data = mifare.readBlock(absBlock)
-                            val hexStr = bytesToHex(data)
-                            val textStr = data.map { if (it in 32..126) it.toChar() else '.' }.joinToString("")
-
-                            resultList.add(
-                                hashMapOf<String, Any>(
-                                    "sector" to sector,
-                                    "block" to block,
-                                    "absBlock" to absBlock,
-                                    "hex" to hexStr,
-                                    "text" to textStr,
-                                    "isTrailer" to isTrailer,
-                                    "keyType" to usedKeyType,
-                                    "key" to usedKeyHex
+                                resultList.add(
+                                    hashMapOf<String, Any>(
+                                        "sector" to sector,
+                                        "block" to block,
+                                        "absBlock" to absBlock,
+                                        "hex" to hexStr,
+                                        "text" to textStr,
+                                        "isTrailer" to isTrailer,
+                                        "keyType" to usedKeyType,
+                                        "key" to usedKeyHex
+                                    )
                                 )
-                            )
 
-                        } catch (e: Exception) {
+                            } catch (e: Exception) {
+                                resultList.add(
+                                    hashMapOf<String, Any>(
+                                        "sector" to sector,
+                                        "block" to block,
+                                        "absBlock" to absBlock,
+                                        "hex" to "READ ERROR",
+                                        "text" to "READ ERROR",
+                                        "isTrailer" to isTrailer,
+                                        "keyType" to usedKeyType,
+                                        "key" to usedKeyHex
+                                    )
+                                )
+                            }
+                        }
+                    } else {
+                        keyInfoList.add(hashMapOf(
+                            "sector" to sector,
+                            "keyType" to "",
+                            "key" to "",
+                            "authenticated" to false
+                        ))
+
+                        val startBlock = mifare.sectorToBlock(sector)
+                        val blockCount = mifare.getBlockCountInSector(sector)
+
+                        for (block in 0 until blockCount) {
+                            val absBlock = startBlock + block
+                            val isTrailer = (block == blockCount - 1)
+
                             resultList.add(
                                 hashMapOf<String, Any>(
                                     "sector" to sector,
                                     "block" to block,
                                     "absBlock" to absBlock,
-                                    "hex" to "READ ERROR",
-                                    "text" to "READ ERROR",
+                                    "hex" to "AUTH ERROR",
+                                    "text" to "AUTH ERROR",
                                     "isTrailer" to isTrailer,
-                                    "keyType" to usedKeyType,
-                                    "key" to usedKeyHex
+                                    "keyType" to "",
+                                    "key" to ""
                                 )
                             )
                         }
                     }
-                } else {
-                    // Authentication failed
-                    keyInfoList.add(hashMapOf(
-                        "sector" to sector,
-                        "keyType" to "",
-                        "key" to "",
-                        "authenticated" to false
-                    ))
-
-                    val startBlock = mifare.sectorToBlock(sector)
-                    val blockCount = mifare.getBlockCountInSector(sector)
-
-                    for (block in 0 until blockCount) {
-                        val absBlock = startBlock + block
-                        val isTrailer = (block == blockCount - 1)
-
-                        resultList.add(
-                            hashMapOf<String, Any>(
-                                "sector" to sector,
-                                "block" to block,
-                                "absBlock" to absBlock,
-                                "hex" to "AUTH ERROR",
-                                "text" to "AUTH ERROR",
-                                "isTrailer" to isTrailer,
-                                "keyType" to "",
-                                "key" to ""
-                            )
-                        )
-                    }
                 }
+
+                mifare.close()
+
+                println("DEBUG: Read completed. Successful sectors: $successfulSectors/${mifare.sectorCount}")
+
+                isReading = false
+
+                eventSink?.success(
+                    hashMapOf<String, Any>(
+                        "uid" to uidToSend,
+                        "blocks" to resultList,
+                        "keyInfo" to keyInfoList,
+                        "type" to mifare.type.toString(),
+                        "size" to mifare.size,
+                        "sectorCount" to mifare.sectorCount,
+                        "successfulSectors" to successfulSectors,
+                        "fullUid" to uidToSend
+                    )
+                )
+
+            } catch (e: IOException) {
+                println("DEBUG: IO Exception during read: ${e.message}")
+                eventSink?.success(hashMapOf<String, Any>("error" to "Tag disconnected. Please tap card again."))
+                // Clear current tag to force fresh detection
+                clearCurrentTag()
+            } catch (e: Exception) {
+                println("DEBUG: Error in readAllBlocks: ${e.message}")
+                e.printStackTrace()
+                eventSink?.success(hashMapOf<String, Any>("error" to "Read error: ${e.message}"))
+                isReading = false
             }
 
-            mifare.close()
-
-            println("DEBUG: Read completed. Successful sectors: $successfulSectors/${mifare.sectorCount}")
-
-            // Reset reading flag
-            isReading = false
-
-            eventSink?.success(
-                hashMapOf<String, Any>(
-                    "uid" to uidToSend,
-                    "blocks" to resultList,
-                    "keyInfo" to keyInfoList,
-                    "type" to mifare.type.toString(),
-                    "size" to mifare.size,
-                    "sectorCount" to mifare.sectorCount,
-                    "successfulSectors" to successfulSectors,
-                    "fullUid" to uidToSend
-                )
-            )
-
         } catch (e: Exception) {
-            println("DEBUG: Error in readAllBlocks: ${e.message}")
-            e.printStackTrace()
-            eventSink?.success(hashMapOf<String, Any>("error" to "Read error: ${e.message}"))
+            println("DEBUG: Outer error in readAllBlocks: ${e.message}")
+            eventSink?.success(hashMapOf<String, Any>("error" to "Tag error: ${e.message}"))
             isReading = false
         }
     }
+
 
     private fun hexStringToByteArray(hex: String): ByteArray {
         val cleanHex = hex.replace("\\s".toRegex(), "").uppercase()
@@ -927,5 +1103,200 @@ object MifareClassicPlugin {
             hexChars[i * 2 + 1] = "0123456789ABCDEF"[v and 0x0F]
         }
         return String(hexChars)
+    }
+
+    // Storage methods
+    private fun saveCardKeysToStorage(call: MethodCall, result: Result) {
+        try {
+            val keysJson = call.argument<String>("keysJson")
+            val context = applicationContext ?: return
+            val sharedPref = context.getSharedPreferences("mifare_keys", Context.MODE_PRIVATE)
+            sharedPref.edit().putString("saved_card_keys", keysJson).apply()
+            println("DEBUG: Saved card keys to storage")
+            result.success(true)
+        } catch (e: Exception) {
+            println("DEBUG: Error saving card keys to storage: ${e.message}")
+            result.error("SAVE_KEYS_ERROR", "Failed to save keys", e.message)
+        }
+    }
+
+    private fun loadCardKeysFromStorage(call: MethodCall, result: Result) {
+        try {
+            val context = applicationContext ?: return
+            val sharedPref = context.getSharedPreferences("mifare_keys", Context.MODE_PRIVATE)
+            val keysJson = sharedPref.getString("saved_card_keys", "")
+            println("DEBUG: Loaded card keys from storage: ${keysJson?.length ?: 0} chars")
+            result.success(keysJson)
+        } catch (e: Exception) {
+            println("DEBUG: Error loading card keys from storage: ${e.message}")
+            result.error("LOAD_KEYS_ERROR", "Failed to load keys", e.message)
+        }
+    }
+
+    private fun setSectorKeyBatch(call: MethodCall, result: Result) {
+        try {
+            val uid = call.argument<String>("uid")
+            val keyType = call.argument<String>("keyType")
+            val key = call.argument<String>("key")
+
+            if (uid == null || keyType == null || key == null) {
+                result.error("INVALID_ARGS", "Missing arguments", null)
+                return
+            }
+
+            // Store in card keys map
+            if (!cardKeys.containsKey(uid)) {
+                cardKeys[uid] = mutableMapOf()
+            }
+            cardKeys[uid]!![keyType] = key
+
+            // Also set as custom key for all sectors (for immediate use)
+            val keyBytes = hexStringToByteArray(key)
+            for (sector in 0..15) {
+                if (keyType == "A") {
+                    customKeysA[sector] = keyBytes
+                } else {
+                    customKeysB[sector] = keyBytes
+                }
+            }
+
+            println("DEBUG: Set $keyType=$key for all sectors for card $uid")
+            result.success(true)
+        } catch (e: Exception) {
+            println("DEBUG: Error setting sector key batch: ${e.message}")
+            result.error("SET_KEY_BATCH_ERROR", "Failed to set keys", e.message)
+        }
+    }
+
+    private fun removeKeyForCard(call: MethodCall, result: Result) {
+        try {
+            val uid = call.argument<String>("uid")
+            val keyType = call.argument<String>("keyType")
+
+            if (uid == null || keyType == null) {
+                result.error("INVALID_ARGS", "Missing arguments", null)
+                return
+            }
+
+            // Remove from card keys map
+            if (cardKeys.containsKey(uid)) {
+                cardKeys[uid]!!.remove(keyType)
+                if (cardKeys[uid]!!.isEmpty()) {
+                    cardKeys.remove(uid)
+                }
+            }
+
+            println("DEBUG: Removed $keyType key for card $uid")
+            result.success(true)
+        } catch (e: Exception) {
+            println("DEBUG: Error removing key for card: ${e.message}")
+            result.error("REMOVE_KEY_ERROR", "Failed to remove key", e.message)
+        }
+    }
+
+    private fun clearAllCardKeys(result: Result) {
+        try {
+            // Clear from memory
+            cardKeys.clear()
+
+            // Clear from storage
+            val context = applicationContext ?: return
+            val sharedPref = context.getSharedPreferences("mifare_keys", Context.MODE_PRIVATE)
+            sharedPref.edit().remove("saved_card_keys").apply()
+
+            println("DEBUG: All card keys cleared")
+            result.success(true)
+        } catch (e: Exception) {
+            println("DEBUG: Error clearing all card keys: ${e.message}")
+            result.error("CLEAR_KEYS_ERROR", "Failed to clear keys", e.message)
+        }
+    }
+
+    // Helper method to load saved keys on startup
+    private fun loadSavedKeysFromStorage() {
+        try {
+            val context = applicationContext ?: return
+            val sharedPref = context.getSharedPreferences("mifare_keys", Context.MODE_PRIVATE)
+            val keysJson = sharedPref.getString("saved_card_keys", "")
+
+            if (!keysJson.isNullOrEmpty()) {
+                val jsonObject = JSONObject(keysJson)
+                val keys = jsonObject.keys()
+                while (keys.hasNext()) {
+                    val uid = keys.next()
+                    val cardKeyObject = jsonObject.getJSONObject(uid)
+                    cardKeys[uid] = mutableMapOf()
+
+                    val keyTypes = cardKeyObject.keys()
+                    while (keyTypes.hasNext()) {
+                        val keyType = keyTypes.next()
+                        val key = cardKeyObject.getString(keyType)
+                        cardKeys[uid]!![keyType] = key
+                    }
+                }
+                println("DEBUG: Loaded ${cardKeys.size} cards with saved keys from storage")
+            }
+        } catch (e: Exception) {
+            println("DEBUG: Error loading saved keys from storage: ${e.message}")
+        }
+    }
+    private fun setCustomKeys(call: MethodCall, result: Result) {
+        try {
+            val keysMap = call.argument<Map<String, String>>("keys")
+
+            if (keysMap != null) {
+                println("DEBUG: Setting custom keys from Flutter")
+
+                // Clear existing custom keys first
+                customKeysA.clear()
+                customKeysB.clear()
+
+                // Parse and set the keys
+                keysMap.forEach { (keyString, hexKey) ->
+                    try {
+                        // Key format: "A_0" or "B_3" (type_sector)
+                        val parts = keyString.split("_")
+                        if (parts.size == 2) {
+                            val keyType = parts[0].uppercase()
+                            val sector = try {
+                                parts[1].toInt()
+                            } catch (e: NumberFormatException) {
+                                println("DEBUG: Invalid sector in key string: $keyString")
+                                return@forEach
+                            }
+
+                            // Clean the hex key
+                            val cleanHex = hexKey.replace("\\s".toRegex(), "").uppercase()
+
+                            // Validate hex key length
+                            if (cleanHex.length != 12) {
+                                println("DEBUG: Invalid key length for $keyString: $cleanHex (expected 12 hex chars)")
+                                return@forEach
+                            }
+
+                            val keyBytes = hexStringToByteArray(cleanHex)
+
+                            if (keyType == "A") {
+                                customKeysA[sector] = keyBytes
+                                println("DEBUG: Set custom Key A for sector $sector: $cleanHex")
+                            } else if (keyType == "B") {
+                                customKeysB[sector] = keyBytes
+                                println("DEBUG: Set custom Key B for sector $sector: $cleanHex")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        println("DEBUG: Failed to parse key $keyString: ${e.message}")
+                    }
+                }
+
+                println("DEBUG: Successfully set ${customKeysA.size} Key A and ${customKeysB.size} Key B")
+                result.success(true)
+            } else {
+                result.error("INVALID_ARGS", "No keys provided", null)
+            }
+        } catch (e: Exception) {
+            println("DEBUG: Error in setCustomKeys: ${e.message}")
+            result.error("SET_CUSTOM_KEYS_ERROR", "Failed to set custom keys", e.message)
+        }
     }
 }
