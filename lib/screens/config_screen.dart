@@ -658,6 +658,14 @@ class _ConfigScreenState extends State<ConfigScreen> {
     final newKeyB = _newKeyBController.text.toUpperCase().replaceAll(RegExp(r'[^0-9A-F]'), '');
     final accessBits = _accessBitsController.text.toUpperCase().replaceAll(RegExp(r'[^0-9A-F]'), '');
 
+    print('DEBUG: Starting sector configuration');
+    print('DEBUG: Sector: $sector');
+    print('DEBUG: Current Key: $currentKey');
+    print('DEBUG: Key Type: $_selectedKeyType');
+    print('DEBUG: New Key A: $newKeyA');
+    print('DEBUG: New Key B: $newKeyB');
+    print('DEBUG: Access Bits: $accessBits');
+
     // Validate sector number
     if (sector == null || sector < 0 || sector > 15) {
       _showError('Please enter a valid sector number (0-15)');
@@ -698,19 +706,32 @@ class _ConfigScreenState extends State<ConfigScreen> {
               Text('Sector: $sector'),
               Text('Authenticate with: $_selectedKeyType'),
               const SizedBox(height: 16),
-              const Text('Configuration Details:'),
-              Text('New Key A: $newKeyA'),
-              Text('New Key B: $newKeyB'),
-              Text('Access Bits: $accessBits'),
-              const SizedBox(height: 8),
               const Text(
-                'Structure:',
+                'This will write the following trailer block structure:',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
-              Text('• Key A: $newKeyA (6 bytes)'),
-              Text('• Access Bits: $accessBits (3 bytes)'),
-              Text('• User Byte: 0x69 (Key B visibility)'),
-              Text('• Key B: $newKeyB (6 bytes)'),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Key A (6 bytes): $newKeyA', style: const TextStyle(fontFamily: 'monospace')),
+                    Text('Access Bits (3 bytes): $accessBits', style: const TextStyle(fontFamily: 'monospace')),
+                    Text('User Byte (1 byte): 0x69', style: const TextStyle(fontFamily: 'monospace')),
+                    Text('Key B (6 bytes): $newKeyB', style: const TextStyle(fontFamily: 'monospace')),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Full trailer block (16 bytes): ${newKeyA}${accessBits}69${newKeyB}',
+                      style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 16),
               Container(
                 padding: const EdgeInsets.all(8),
@@ -740,15 +761,25 @@ class _ConfigScreenState extends State<ConfigScreen> {
       ),
     );
 
-    if (confirmed != true) return;
+    if (confirmed != true) {
+      print('DEBUG: User cancelled configuration');
+      return;
+    }
 
     // Start writing
     setState(() => _isWriting = true);
 
     try {
       final provider = Provider.of<NfcProvider>(context, listen: false);
+      print('DEBUG: Checking if tag is present...');
+      final tagPresent = await provider.checkTagPresent();
+      if (!tagPresent) {
+        _showError('No NFC tag detected. Please tap your card first.');
+        return;
+      }
+      print('DEBUG: Calling provider.configureSector()...');
 
-      // Use the new configureSector method
+      // Use the configureSector method
       final success = await provider.configureSector(
         sector: sector,
         currentKey: currentKey,
@@ -758,25 +789,52 @@ class _ConfigScreenState extends State<ConfigScreen> {
         accessBits: accessBits,
       );
 
+      print('DEBUG: configureSector returned: $success');
+      print('DEBUG: Provider error message: ${provider.errorMessage}');
+
       if (success) {
         // Save the new key A for future use
         await provider.setCustomKey(sector, 'A', newKeyA);
 
+        print('DEBUG: Configuration successful, updating UI...');
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Configuration written to Sector $sector successfully!'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('✓ Sector $sector configured successfully!'),
+                SizedBox(height: 4),
+                Text(
+                  'Note: Key A may show as zeros when read back - this is normal.',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
             backgroundColor: Colors.green,
-            duration: const Duration(seconds: 3),
+            duration: const Duration(seconds: 4),
           ),
         );
 
         // Update current key in form to the new Key A
         _currentKeyController.text = newKeyA;
         _selectedKeyType = 'Key A';
+
+        // Trigger a re-scan to show updated configuration
+        await Future.delayed(const Duration(milliseconds: 1000));
+        provider.startScan();
+
       } else {
-        _showError('Failed to write configuration: ${provider.errorMessage}');
+        String errorMsg = 'Failed to write configuration';
+        if (provider.errorMessage.isNotEmpty) {
+          errorMsg += ': ${provider.errorMessage}';
+        }
+        _showError(errorMsg);
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      print('DEBUG: Exception in _configureSector: $e');
+      print('DEBUG: Stack trace: $stackTrace');
       _showError('Error: $e');
     } finally {
       setState(() => _isWriting = false);

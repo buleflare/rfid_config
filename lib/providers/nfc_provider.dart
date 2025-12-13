@@ -268,11 +268,19 @@ class NfcProvider with ChangeNotifier {
   Future<bool> configureSector({
     required int sector,
     required String currentKey,
-    required String keyType, // 'A' or 'B'
+    required String keyType,
     required String newKeyA,
     required String newKeyB,
     required String accessBits,
   }) async {
+    print('DEBUG: NfcProvider.configureSector called');
+    print('DEBUG:   sector: $sector');
+    print('DEBUG:   keyType: $keyType');
+    print('DEBUG:   currentKey: $currentKey');
+    print('DEBUG:   newKeyA: $newKeyA');
+    print('DEBUG:   newKeyB: $newKeyB');
+    print('DEBUG:   accessBits: $accessBits');
+
     try {
       final result = await _channel.invokeMethod('configureSector', {
         'sector': sector,
@@ -283,19 +291,37 @@ class NfcProvider with ChangeNotifier {
         'accessBits': accessBits,
       });
 
+      print('DEBUG: configureSector result: $result');
+
       if (result == true) {
         // Save the new key A for future use
         _customKeys['A_$sector'] = newKeyA;
-        notifyListeners();
+        print('DEBUG: Saved Key A for sector $sector: $newKeyA');
       }
 
       return result == true;
     } on PlatformException catch (e) {
+      print('DEBUG: PlatformException in configureSector: ${e.message}');
+      print('DEBUG: Exception details: ${e.details}');
+      print('DEBUG: Exception code: ${e.code}');
       _errorMessage = e.message ?? 'Unknown error';
+      return false;
+    } catch (e) {
+      print('DEBUG: Other error in configureSector: $e');
+      _errorMessage = e.toString();
       return false;
     }
   }
-
+// Add this method to check if tag is still present
+  Future<bool> checkTagPresent() async {
+    try {
+      // Try to read custom keys - if this works, tag is probably present
+      await getCustomKeys();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
   // Get custom keys from plugin
   Future<Map<String, String>> getCustomKeys() async {
     try {
