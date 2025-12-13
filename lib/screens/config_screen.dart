@@ -14,7 +14,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   final _currentKeyController = TextEditingController(text: 'FFFFFFFFFFFF');
   final _newKeyAController = TextEditingController(text: 'FFFFFFFFFFFF');
   final _newKeyBController = TextEditingController(text: 'FFFFFFFFFFFF');
-  final _accessBitsController = TextEditingController(text: '078069'); // Only 6 chars now
+  final _accessBitsController = TextEditingController(text: 'FF0780'); // Only 6 chars now
 
   // Selected key type for authentication
   String _selectedKeyType = 'Key A';
