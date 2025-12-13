@@ -2,6 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/nfc_provider.dart';
 
+import 'package:flutter/services.dart';
+
+class UpperCaseTextFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue,
+      TextEditingValue newValue,
+      ) {
+    return TextEditingValue(
+      text: newValue.text.toUpperCase(),
+      selection: newValue.selection,
+    );
+  }
+}
+
 class ConfigScreen extends StatefulWidget {
   const ConfigScreen({super.key});
 
@@ -14,7 +29,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   final _currentKeyController = TextEditingController(text: 'FFFFFFFFFFFF');
   final _newKeyAController = TextEditingController(text: 'FFFFFFFFFFFF');
   final _newKeyBController = TextEditingController(text: 'FFFFFFFFFFFF');
-  final _accessBitsController = TextEditingController(text: '078069'); // Only 6 chars now
+  final _accessBitsController = TextEditingController(text: 'FF0780'); // Only 6 chars now
 
   // Selected key type for authentication
   String _selectedKeyType = 'Key A';
@@ -105,51 +120,73 @@ class _ConfigScreenState extends State<ConfigScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    // Authentication Section
+                    // Authentication Section - CHANGED TO COLUMN
                     const Text(
                       'Authentication',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
 
-                    Row(
-                      children: [
-                        Expanded(
-                          child: DropdownButtonFormField<String>(
-                            value: _selectedKeyType,
-                            decoration: InputDecoration(
-                              labelText: 'Authenticate With',
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              filled: true,
-                              fillColor: Colors.grey.shade50,
-                            ),
-                            items: const [
-                              DropdownMenuItem(
-                                value: 'Key A',
-                                child: Text('Key A 🔑'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'Key B',
-                                child: Text('Key B 🔑'),
-                              ),
+                    // Key Type Dropdown
+                    DropdownButtonFormField<String>(
+                      value: _selectedKeyType,
+                      decoration: InputDecoration(
+                        labelText: 'Authenticate With',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey.shade50,
+                        prefixIcon: const Icon(Icons.vpn_key),
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'Key A',
+                          child: Row(
+                            children: [
+                              Icon(Icons.vpn_key, size: 20),
+                              SizedBox(width: 8),
+                              Text('Key A'),
                             ],
-                            onChanged: _isWriting ? null : (value) {
-                              setState(() => _selectedKeyType = value!);
-                            },
                           ),
                         ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: _buildTextField(
-                            controller: _currentKeyController,
-                            label: 'Current Key',
-                            hint: '12 hex digits',
-                            icon: Icons.vpn_key,
-                            enabled: !_isWriting,
+                        DropdownMenuItem(
+                          value: 'Key B',
+                          child: Row(
+                            children: [
+                              Icon(Icons.key, size: 20),
+                              SizedBox(width: 8),
+                              Text('Key B'),
+                            ],
                           ),
                         ),
+                      ],
+                      onChanged: _isWriting ? null : (value) {
+                        setState(() => _selectedKeyType = value!);
+                      },
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // Current Key Input
+                    _buildTextField(
+                      controller: _currentKeyController,
+                      label: 'Current Key (12 hex digits)',
+                      hint: 'FFFFFFFFFFFF',
+                      icon: Icons.vpn_key,
+                      enabled: !_isWriting,
+                      isKeyField: true,
+                    ),
+
+                    // Example keys for quick selection
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        _buildExampleKeyChip('Default Key', 'FFFFFFFFFFFF'),
+                        _buildExampleKeyChip('All Zeros', '000000000000'),
+                        _buildExampleKeyChip('Random Key', 'A0B1C2D3E4F5'),
+                        _buildExampleKeyChip('Alternate', 'D3F7D3F7D3F7'),
                       ],
                     ),
 
@@ -164,30 +201,50 @@ class _ConfigScreenState extends State<ConfigScreen> {
                     ),
                     const SizedBox(height: 8),
 
+                    // For New Key A
                     _buildTextField(
                       controller: _newKeyAController,
-                      label: 'New Key A (6 bytes)',
+                      label: 'New Key A (12 hex digits)',
                       hint: 'FFFFFFFFFFFF',
                       icon: Icons.vpn_key,
                       enabled: !_isWriting,
+                      isKeyField: true,
                     ),
+
                     const SizedBox(height: 16),
 
+                    // For New Key B
                     _buildTextField(
                       controller: _newKeyBController,
-                      label: 'New Key B (6 bytes)',
+                      label: 'New Key B (12 hex digits)',
                       hint: 'FFFFFFFFFFFF',
                       icon: Icons.vpn_key,
                       enabled: !_isWriting,
+                      isKeyField: true,
                     ),
+
                     const SizedBox(height: 16),
 
+                    // Example keys for New Keys
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        _buildExampleNewKeyChip('Default', 'FFFFFFFFFFFF'),
+                        _buildExampleNewKeyChip('Zeros', '000000000000'),
+                        _buildExampleNewKeyChip('Custom A', 'A0A1A2A3A4A5'),
+                        _buildExampleNewKeyChip('Custom B', 'B0B1B2B3B4B5'),
+                      ],
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // Access Bits and User Byte
                     Row(
                       children: [
                         Expanded(
                           child: _buildTextField(
                             controller: _accessBitsController,
-                            label: 'Access Bits (B6,B7,B8)',
+                            label: 'Access Bits (6 hex digits)',
                             hint: '078069',
                             icon: Icons.lock,
                             enabled: !_isWriting,
@@ -480,12 +537,57 @@ class _ConfigScreenState extends State<ConfigScreen> {
     );
   }
 
+
+// Add these methods to your class
+  Widget _buildExampleKeyChip(String label, String key) {
+    return GestureDetector(
+      onTap: () {
+        if (!_isWriting) {
+          setState(() {
+            _currentKeyController.text = key;
+          });
+        }
+      },
+      child: Chip(
+        label: Text(label),
+        avatar: const Icon(Icons.key, size: 16),
+        backgroundColor: Colors.amber.shade100,
+        labelStyle: const TextStyle(fontSize: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      ),
+    );
+  }
+
+  Widget _buildExampleNewKeyChip(String label, String key) {
+    return GestureDetector(
+      onTap: () {
+        if (!_isWriting) {
+          setState(() {
+            // Apply to both New Key A and New Key B for simplicity
+            // You could modify this to apply to a specific field
+            _newKeyAController.text = key;
+            _newKeyBController.text = key;
+          });
+        }
+      },
+      child: Chip(
+        label: Text(label),
+        avatar: const Icon(Icons.vpn_key, size: 16),
+        backgroundColor: Colors.blue.shade100,
+        labelStyle: const TextStyle(fontSize: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      ),
+    );
+  }
+
+// Update the _buildTextField method to handle key validation
   Widget _buildTextField({
     required TextEditingController controller,
     required String label,
     required String hint,
     required IconData icon,
     bool enabled = true,
+    bool isKeyField = false,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -509,17 +611,49 @@ class _ConfigScreenState extends State<ConfigScreen> {
             filled: true,
             fillColor: enabled ? Colors.grey.shade50 : Colors.grey.shade200,
             counterText: '',
+            errorText: isKeyField && controller.text.isNotEmpty
+                ? _validateKey(controller.text)
+                : null,
           ),
           style: const TextStyle(
             fontFamily: 'monospace',
             fontSize: 14,
+            letterSpacing: 1.2,
           ),
           textCapitalization: TextCapitalization.characters,
-          maxLength: hint.contains('12') ? 12 : 6,
+          maxLength: isKeyField ? 12 : (hint.contains('Access') ? 6 : null),
+          onChanged: (value) {
+            if (isKeyField) {
+              setState(() {}); // Trigger validation update
+            }
+          },
+          inputFormatters: isKeyField ? [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9A-Fa-f]')),
+          ] : [],
         ),
       ],
     );
   }
+
+// Add this validation method
+  String? _validateKey(String key) {
+    if (key.isEmpty) return null;
+
+    final cleanKey = key.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+
+    if (cleanKey.length != 12) {
+      return 'Must be 12 hex characters';
+    }
+
+    if (!RegExp(r'^[0-9A-F]{12}$').hasMatch(cleanKey)) {
+      return 'Invalid hex characters';
+    }
+
+    return null;
+  }
+
+
+
 
   Widget _buildTemplateChip(String label, VoidCallback onTap, {
     Color color = Colors.blue,
@@ -672,22 +806,27 @@ class _ConfigScreenState extends State<ConfigScreen> {
       return;
     }
 
-    // Validate keys and access bits
-    if (!_isValidHex(currentKey, 12)) {
-      _showError('Current key must be 12 hexadecimal digits (6 bytes)');
+    // Validate keys using helper method
+    final currentKeyError = _validateKey(currentKey);
+    final newKeyAError = _validateKey(newKeyA);
+    final newKeyBError = _validateKey(newKeyB);
+
+    if (currentKeyError != null) {
+      _showError('Current Key: $currentKeyError');
       return;
     }
 
-    if (!_isValidHex(newKeyA, 12)) {
-      _showError('New Key A must be 12 hexadecimal digits (6 bytes)');
+    if (newKeyAError != null) {
+      _showError('New Key A: $newKeyAError');
       return;
     }
 
-    if (!_isValidHex(newKeyB, 12)) {
-      _showError('New Key B must be 12 hexadecimal digits (6 bytes)');
+    if (newKeyBError != null) {
+      _showError('New Key B: $newKeyBError');
       return;
     }
 
+    // Validate access bits
     if (!_isValidHex(accessBits, 6)) {
       _showError('Access bits must be 6 hexadecimal digits (3 bytes)');
       return;

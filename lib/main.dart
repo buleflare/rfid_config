@@ -12,6 +12,7 @@ void main() {
   runApp(
     MultiProvider(
       providers: [
+        ChangeNotifierProvider(create: (context) => NfcProvider()..initializeKeys()),
         ChangeNotifierProvider(create: (_) => NfcProvider()),
       ],
       child: const MyApp(),

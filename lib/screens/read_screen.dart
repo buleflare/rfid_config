@@ -11,6 +11,11 @@ class ReadScreen extends StatefulWidget {
 }
 
 class _ReadScreenState extends State<ReadScreen> {
+  // Controllers for custom keys
+  final TextEditingController _keyAController = TextEditingController();
+  final TextEditingController _keyBController = TextEditingController();
+  bool _useCustomKeys = false;
+
   @override
   void initState() {
     super.initState();
@@ -18,6 +23,36 @@ class _ReadScreenState extends State<ReadScreen> {
       final provider = Provider.of<NfcProvider>(context, listen: false);
       provider.startScan();
     });
+  }
+
+  @override
+  void dispose() {
+    _keyAController.dispose();
+    _keyBController.dispose();
+    super.dispose();
+  }
+
+  // Helper method to validate hex keys
+  bool _isValidHexKey(String key) {
+    if (key.isEmpty) return false;
+    final cleanKey = key.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+    if (cleanKey.length != 12) return false;
+    return RegExp(r'^[0-9A-Fa-f]{12}$').hasMatch(cleanKey);
+  }
+
+  // Load saved keys for current card
+  void _loadSavedKeys() {
+    final provider = Provider.of<NfcProvider>(context, listen: false);
+    final uid = provider.getCardInfo('uid', '');
+
+    if (uid.isNotEmpty) {
+      // Try to load keys for this specific card
+      final keyA = provider.getKeyForCard(uid, 'A');
+      final keyB = provider.getKeyForCard(uid, 'B');
+
+      if (keyA != null) _keyAController.text = keyA;
+      if (keyB != null) _keyBController.text = keyB;
+    }
   }
 
   @override
@@ -43,6 +78,13 @@ class _ReadScreenState extends State<ReadScreen> {
       ),
       body: Consumer<NfcProvider>(
         builder: (context, provider, child) {
+          // Load keys when card data is available
+          if (provider.cardData.isNotEmpty && !provider.isLoading) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _loadSavedKeys();
+            });
+          }
+
           if (provider.isLoading) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -113,7 +155,6 @@ class _ReadScreenState extends State<ReadScreen> {
           final successfulSectors = provider.getCardInfoInt('successfulSectors', 0);
           final fullUid = provider.getCardInfo('fullUid', uid);
 
-// In the Consumer builder in ReadScreen
           if (!provider.isLoading && provider.cardData.isEmpty) {
             return Center(
               child: Column(
@@ -138,7 +179,6 @@ class _ReadScreenState extends State<ReadScreen> {
                   const SizedBox(height: 30),
                   ElevatedButton.icon(
                     onPressed: () {
-                      print('DEBUG: Manual scan button pressed');
                       provider.startScan();
                     },
                     icon: const Icon(Icons.search),
@@ -170,7 +210,149 @@ class _ReadScreenState extends State<ReadScreen> {
               padding: const EdgeInsets.all(16.0),
               child: Column(
                 children: [
-                  // Card Info with last scanned history
+                  // Custom Keys Section
+                  Card(
+                    elevation: 3,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // FIX 1: Add Expanded to this Row
+                          Row(
+                            children: [
+                              Icon(Icons.vpn_key, color: Colors.blue.shade800),
+                              const SizedBox(width: 8),
+                              Expanded(  // Add Expanded here
+                                child: const Text(
+                                  'Custom Keys for Authentication',
+                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+
+                          // Custom keys toggle - ALREADY FIXED (good)
+                          Row(
+                            children: [
+                              Checkbox(
+                                value: _useCustomKeys,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _useCustomKeys = value ?? false;
+                                  });
+                                },
+                              ),
+                              Expanded(
+                                child: Text('Use custom keys for reading'),
+                              ),
+                              const SizedBox(width: 10),
+                              IconButton(
+                                icon: Icon(Icons.save, size: 20),
+                                onPressed: _useCustomKeys ? () => _saveKeys(context) : null,
+                                tooltip: 'Save keys for this card',
+                              ),
+                            ],
+                          ),
+
+                          if (_useCustomKeys) ...[
+                            const SizedBox(height: 12),
+                            _buildKeyInputField(
+                              controller: _keyAController,
+                              label: 'Key A (6 bytes, 12 hex chars)',
+                              hintText: 'FFFFFFFFFFFF',
+                              isKeyA: true,
+                            ),
+                            const SizedBox(height: 12),
+                            _buildKeyInputField(
+                              controller: _keyBController,
+                              label: 'Key B (6 bytes, 12 hex chars)',
+                              hintText: 'FFFFFFFFFFFF',
+                              isKeyA: false,
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Icon(Icons.info, color: Colors.blue.shade800, size: 16),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Keys will be used for the next read operation. Leave empty to use default FFFFFFFFFFFF.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey.shade700,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 8,
+                              children: [
+                                _buildExampleKeyChip('Default Key', 'FFFFFFFFFFFF'),
+                                _buildExampleKeyChip('All Zeros', '000000000000'),
+                                _buildExampleKeyChip('All As', 'AAAAAAAAAAAA'),
+                              ],
+                            ),
+                          ],
+
+                          // Show saved keys if available
+                          Consumer<NfcProvider>(
+                            builder: (context, provider, child) {
+                              final savedKeys = provider.getKeysForCard(uid);
+                              if (savedKeys.isNotEmpty && !_useCustomKeys) {
+                                return Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(height: 12),
+                                    const Text(
+                                      'Saved keys for this card:',
+                                      style: TextStyle(fontWeight: FontWeight.w500, color: Colors.green),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: savedKeys.entries.map((entry) {
+                                        return Chip(
+                                          label: Text('Key ${entry.key}: ${entry.value}'),
+                                          avatar: Icon(entry.key == 'A' ? Icons.vpn_key : Icons.key),
+                                          backgroundColor: entry.key == 'A' ? Colors.blue.shade100 : Colors.green.shade100,
+                                          deleteIcon: const Icon(Icons.close, size: 16),
+                                          onDeleted: () => _removeKey(context, entry.key),
+                                        );
+                                      }).toList(),
+                                    ),
+                                  ],
+                                );
+                              }
+                              return const SizedBox.shrink();
+                            },
+                          ),
+
+                          // Read with custom keys button
+                          if (_useCustomKeys) ...[
+                            const SizedBox(height: 16),
+                            ElevatedButton.icon(
+                              onPressed: _readWithCustomKeys,
+                              icon: const Icon(Icons.nfc),
+                              label: const Text('Read with Custom Keys'),
+                              style: ElevatedButton.styleFrom(
+                                minimumSize: const Size(double.infinity, 50),
+                                backgroundColor: Colors.blue.shade800,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Card Information
                   Card(
                     elevation: 3,
                     child: Padding(
@@ -180,11 +362,12 @@ class _ReadScreenState extends State<ReadScreen> {
                         children: [
                           Row(
                             children: [
-                              const Text(
-                                'Card Information',
-                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              Expanded(  // Add Expanded here
+                                child: const Text(
+                                  'Card Information',
+                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
                               ),
-                              const Spacer(),
                               // Show UID copy button
                               IconButton(
                                 icon: const Icon(Icons.copy, size: 20),
@@ -201,47 +384,22 @@ class _ReadScreenState extends State<ReadScreen> {
                           _buildInfoRow('Sectors', '$sectorCount'),
                           _buildInfoRow('Successfully Read', '$successfulSectors sectors'),
 
-                          // Show saved custom keys
-                          if (provider.customKeys.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            const Divider(),
-                            const SizedBox(height: 8),
-                            const Text(
-                              'Saved Keys',
-                              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue),
-                            ),
-                            const SizedBox(height: 4),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 4,
-                              children: provider.customKeys.entries.map((entry) {
-                                final parts = entry.key.split('_');
-                                final keyType = parts[0];
-                                final sector = parts.length > 1 ? parts[1] : '?';
-                                return Chip(
-                                  label: Text('S$sector Key$keyType'),
-                                  avatar: Icon(keyType == 'A' ? Icons.vpn_key : Icons.key, size: 16),
-                                  backgroundColor: Colors.blue.shade100,
-                                  deleteIcon: const Icon(Icons.close, size: 16),
-                                  onDeleted: () => _removeKey(context, int.parse(sector), keyType),
-                                );
-                              }).toList(),
-                            ),
-                          ],
-
                           // Last scanned info
                           if (provider.lastScannedUid.isNotEmpty &&
                               provider.lastScannedUid != uid) ...[
                             const Divider(height: 30),
+                            // FIX 2: Add Expanded to this Row
                             Row(
                               children: [
                                 Icon(Icons.history, color: Colors.grey.shade600, size: 18),
                                 const SizedBox(width: 8),
-                                const Text(
-                                  'Previous Scan:',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.grey,
+                                Expanded(  // Add Expanded here
+                                  child: const Text(
+                                    'Previous Scan:',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.grey,
+                                    ),
                                   ),
                                 ),
                               ],
@@ -290,13 +448,16 @@ class _ReadScreenState extends State<ReadScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // FIX 3: Add Expanded to this Row
                           Row(
                             children: [
                               Icon(Icons.verified_user, color: Colors.blue.shade800),
                               const SizedBox(width: 8),
-                              const Text(
-                                'Authentication Status',
-                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue),
+                              Expanded(  // Add Expanded here
+                                child: const Text(
+                                  'Authentication Status',
+                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue),
+                                ),
                               ),
                             ],
                           ),
@@ -357,10 +518,16 @@ class _ReadScreenState extends State<ReadScreen> {
 
                   const SizedBox(height: 20),
 
-                  // Blocks List
-                  const Text(
-                    'Memory Blocks',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  // Blocks List - FIX the Text widget if it's in a Row
+                  Row(
+                    children: [
+                      Expanded(  // Add Expanded if this is in a Row
+                        child: const Text(
+                          'Memory Blocks',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 12),
 
@@ -374,27 +541,196 @@ class _ReadScreenState extends State<ReadScreen> {
     );
   }
 
-  void _removeKey(BuildContext context, int sector, String keyType) async {
+  // Read with custom keys method
+  void _readWithCustomKeys() {
     final provider = Provider.of<NfcProvider>(context, listen: false);
-    final success = await provider.removeCustomKey(sector, keyType);
+
+    // Validate keys
+    final keyAText = _keyAController.text.trim().toUpperCase();
+    final keyBText = _keyBController.text.trim().toUpperCase();
+
+    if (keyAText.isNotEmpty && !_isValidHexKey(keyAText)) {
+      _showError('Invalid Key A format. Must be exactly 12 hex characters.');
+      return;
+    }
+
+    if (keyBText.isNotEmpty && !_isValidHexKey(keyBText)) {
+      _showError('Invalid Key B format. Must be exactly 12 hex characters.');
+      return;
+    }
+
+    // Prepare keys (use null if empty to use defaults)
+    final String? keyA = keyAText.isEmpty ? null : keyAText;
+    final String? keyB = keyBText.isEmpty ? null : keyBText;
+
+    // Start scan with custom keys
+    provider.startScanWithCustomKeys(keyA: keyA, keyB: keyB);
+  }
+
+  // Save keys for current card
+  void _saveKeys(BuildContext context) {
+    final provider = Provider.of<NfcProvider>(context, listen: false);
+    final uid = provider.getCardInfo('uid', '');
+
+    if (uid.isEmpty || uid == 'N/A') {
+      _showError('No card detected. Please scan a card first.');
+      return;
+    }
+
+    final keyAText = _keyAController.text.trim().toUpperCase();
+    final keyBText = _keyBController.text.trim().toUpperCase();
+
+    if (keyAText.isNotEmpty && !_isValidHexKey(keyAText)) {
+      _showError('Invalid Key A format. Must be exactly 12 hex characters.');
+      return;
+    }
+
+    if (keyBText.isNotEmpty && !_isValidHexKey(keyBText)) {
+      _showError('Invalid Key B format. Must be exactly 12 hex characters.');
+      return;
+    }
+
+    // Save keys
+    if (keyAText.isNotEmpty) {
+      provider.saveKeyForCard(uid, 'A', keyAText);
+    }
+
+    if (keyBText.isNotEmpty) {
+      provider.saveKeyForCard(uid, 'B', keyBText);
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Keys saved for this card'),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    // Refresh UI
+    setState(() {});
+  }
+
+  void _removeKey(BuildContext context, String keyType) async {
+    final provider = Provider.of<NfcProvider>(context, listen: false);
+    final uid = provider.getCardInfo('uid', '');
+
+    if (uid.isEmpty || uid == 'N/A') {
+      _showError('No card detected.');
+      return;
+    }
+
+    final success = await provider.removeKeyForCard(uid, keyType);
 
     if (success && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Key ${keyType} for sector $sector removed'),
+          content: Text('Key $keyType removed'),
           backgroundColor: Colors.orange,
         ),
       );
+      // Clear controller if we removed that key
+      if (keyType == 'A') {
+        _keyAController.clear();
+      } else {
+        _keyBController.clear();
+      }
+      setState(() {});
     }
   }
 
-  // Helper method to copy to clipboard
+  // Build key input field
+  Widget _buildKeyInputField({
+    required TextEditingController controller,
+    required String label,
+    required String hintText,
+    required bool isKeyA,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(height: 4),
+        TextField(
+          controller: controller,
+          decoration: InputDecoration(
+            hintText: hintText,
+            prefixIcon: Icon(isKeyA ? Icons.vpn_key : Icons.key),
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.clear),
+              onPressed: () {
+                controller.text = 'FFFFFFFFFFFF';
+                setState(() {});
+              },
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            filled: true,
+            fillColor: _isValidHexKey(controller.text)
+                ? Colors.green.shade50
+                : Colors.grey.shade50,
+            errorText: controller.text.isNotEmpty &&
+                !_isValidHexKey(controller.text)
+                ? 'Invalid key format (12 hex chars like AABBCCDDEEFF)'
+                : null,
+          ),
+          style: const TextStyle(
+            fontFamily: 'monospace',
+            letterSpacing: 1.2,
+          ),
+          keyboardType: TextInputType.text,
+          textCapitalization: TextCapitalization.characters,
+          onChanged: (value) {
+            setState(() {});
+          },
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9A-Fa-f]')),
+            LengthLimitingTextInputFormatter(12),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildExampleKeyChip(String label, String key) {
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _keyAController.text = key;
+          _keyBController.text = key;
+        });
+      },
+      child: Chip(
+        label: Text(label),
+        avatar: const Icon(Icons.key, size: 16),
+        backgroundColor: Colors.amber.shade100,
+        labelStyle: const TextStyle(fontSize: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      ),
+    );
+  }
+
   void _copyToClipboard(BuildContext context, String text) {
     Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Copied: $text'),
         duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
       ),
     );
   }
@@ -479,34 +815,32 @@ class _ReadScreenState extends State<ReadScreen> {
 
   Widget _buildInfoRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 150,
-            child: Text('$label:', style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.grey)),
-          ),
-          Expanded(
-            child: SelectableText(
-              value,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+        padding: const EdgeInsets.symmetric(vertical: 4.0),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 150,
+              child: Text('$label:', style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.grey)),
             ),
-          ),
-        ],
-      ),
+            Expanded(
+              child: SelectableText(
+                value,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+              ),
+            ),
+          ],
+        ),
     );
   }
 
   List<Widget> _buildSectorViews(List<Map<String, dynamic>> blocks, List<Map<String, dynamic>> keyInfo) {
-    // Group blocks by sector
     Map<int, List<Map<String, dynamic>>> sectors = {};
     for (var block in blocks) {
       final sector = (block['sector'] as int?) ?? 0;
       sectors.putIfAbsent(sector, () => []).add(block);
     }
 
-    // Create sector widgets
     return sectors.entries.map((entry) {
       final sectorKeyInfo = keyInfo.firstWhere(
             (info) => info['sector'] == entry.key,
@@ -520,8 +854,6 @@ class _ReadScreenState extends State<ReadScreen> {
     final keyType = keyInfo['keyType'] ?? '';
     final keyHex = keyInfo['key'] ?? '';
     final authenticated = keyInfo['authenticated'] ?? false;
-
-    final hasAuthError = blocks.any((block) => block['hex'] == 'AUTH ERROR' || block['hex'] == 'READ ERROR');
 
     String readingInfo = 'Not authenticated';
     if (authenticated) {
@@ -587,15 +919,475 @@ class _ReadScreenState extends State<ReadScreen> {
     final blockNum = block['block'] ?? 0;
     final isTrailer = block['isTrailer'] ?? false;
     final isError = !sectorAuthenticated || hex == 'AUTH ERROR' || hex == 'READ ERROR';
+    final absBlock = block['absBlock'] ?? 0;
+
+    if (isTrailer && !isError) {
+      return _buildTrailerExpansionTile(
+        block: block,
+        hex: hex,
+        blockNum: blockNum,
+        absBlock: absBlock,
+        keyType: keyType,
+        sectorAuthenticated: sectorAuthenticated,
+      );
+    }
+
+    return _buildNormalBlockRow(
+      block: block,
+      hex: hex,
+      text: text,
+      blockNum: blockNum,
+      isTrailer: isTrailer,
+      isError: isError,
+      absBlock: absBlock,
+      keyType: keyType,
+      sectorAuthenticated: sectorAuthenticated,
+    );
+  }
+
+  // ... Rest of your existing methods (parseTrailerBlock, buildTrailerPart, etc.) ...
+  // These remain the same as in your original code
+  List<Widget> _parseTrailerBlock(String hex) {
+    final List<Widget> parts = [];
+
+    // Key A (bytes 0-5 = chars 0-11)
+    if (hex.length >= 12) {
+      parts.add(_buildTrailerPart(
+        label: 'Key A (6 bytes)',
+        hexValue: hex.substring(0, 12),
+        description: 'Authentication Key A',
+        color: Colors.blue,
+        startIndex: 0,
+        endIndex: 5,
+        isHidden: hex.substring(0, 12) == '000000000000',
+      ));
+      parts.add(const SizedBox(height: 8));
+    }
+
+    // Access Bits (bytes 6-8 = chars 12-17) + User Byte (byte 9 = chars 18-19)
+    if (hex.length >= 20) {
+      final accessBitsHex = hex.substring(12, 18);
+      final userByteHex = hex.length >= 20 ? hex.substring(18, 20) : '';
+
+      parts.add(_buildTrailerPart(
+        label: 'Access Bits (3 bytes)',
+        hexValue: accessBitsHex,
+        description: 'Controls sector permissions',
+        color: Colors.orange,
+        startIndex: 6,
+        endIndex: 8,
+        note: _getAccessBitsNote(accessBitsHex),
+      ));
+      parts.add(const SizedBox(height: 8));
+
+      parts.add(_buildTrailerPart(
+        label: 'User Byte (1 byte)',
+        hexValue: userByteHex,
+        description: 'General purpose byte (B9)',
+        color: Colors.purple,
+        startIndex: 9,
+        endIndex: 9,
+      ));
+      parts.add(const SizedBox(height: 8));
+    }
+
+    // Key B (bytes 10-15 = chars 20-31)
+    if (hex.length >= 32) {
+      final keyBHex = hex.substring(20, 32);
+      final accessBitsHex = hex.length >= 18 ? hex.substring(12, 18) : '';
+
+      parts.add(_buildTrailerPart(
+        label: 'Key B (6 bytes)',
+        hexValue: keyBHex,
+        description: 'Authentication Key B',
+        color: Colors.green,
+        startIndex: 10,
+        endIndex: 15,
+        note: _getKeyBNote(accessBitsHex, keyBHex),
+      ));
+    }
+
+    return parts;
+  }
+
+  Widget _buildTrailerPart({
+    required String label,
+    required String hexValue,
+    required String description,
+    required Color color,
+    required int startIndex,
+    required int endIndex,
+    String? note,
+    bool isHidden = false,
+  }) {
+    final isKeyA = label.contains('Key A');
+    final isKeyB = label.contains('Key B');
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: isError ? Colors.red.shade50 : (isTrailer ? Colors.orange.shade50 : Colors.grey.shade50),
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  'B$startIndex-${endIndex}',
+                  style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          label,
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                            color: color,
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          '(${hexValue.length ~/ 2} bytes)',
+                          style: const TextStyle(fontSize: 10, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      description,
+                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: Colors.grey.shade300),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  isKeyA ? Icons.vpn_key : (isKeyB ? Icons.key : Icons.lock),
+                  size: 14,
+                  color: isHidden ? Colors.red : color,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SelectableText(
+                    hexValue,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: isHidden ? Colors.red : Colors.black,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (note != null || isHidden) ...[
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: isHidden ? Colors.red.shade50 : Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    isHidden ? Icons.warning : Icons.info,
+                    size: 12,
+                    color: isHidden ? Colors.red : Colors.blue,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      note ?? (isHidden
+                          ? 'Key is hidden (reads as zeros). This is normal if access bits restrict key reading.'
+                          : ''),
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: isHidden ? Colors.red : Colors.blue,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _getAccessBitsNote(String accessBitsHex) {
+    if (accessBitsHex.length < 6) return 'Incomplete access bits';
+
+    final Map<String, String> commonAccessBits = {
+      '078069': 'Default: Key A RW, Key B RW, Key B readable',
+      '078869': 'Read Only: Key A RO, Key B RO, Key B readable',
+      '8F0F07': 'Key A RW, Key B RO, Access RO, Key B readable',
+      '8F0F08': 'Key A RW, Key B RO, Access RO, Key B hidden',
+      '778F69': 'Key B Required: Key A RW, Key B RW, Key B readable',
+      '778F00': 'Fully Locked: Key A NO, Key B NO, Key B hidden',
+    };
+
+    final description = commonAccessBits[accessBitsHex] ?? 'Custom configuration';
+
+    final isDangerous = accessBitsHex == '778F00' ||
+        accessBitsHex == '08778F' ||
+        accessBitsHex.contains('8F');
+
+    if (isDangerous) {
+      return '$description. ⚠️ Warning: This configuration may lock the sector!';
+    }
+
+    return description;
+  }
+
+  String _getKeyBNote(String accessBitsHex, String keyBHex) {
+    if (keyBHex == '000000000000') {
+      return 'Key B reads as zeros - may be hidden by access bits or disabled';
+    }
+    if (keyBHex == 'FFFFFFFFFFFF') {
+      return 'Key B is factory default (FFFFFFFFFFFF)';
+    }
+
+    if (accessBitsHex.length >= 6) {
+      try {
+        final byte6 = int.tryParse(accessBitsHex.substring(4, 6), radix: 16) ?? 0;
+        if ((byte6 & 0xF0) == 0x80) {
+          return 'Key B is configured as NOT readable (hidden) by access bits';
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+    }
+
+    return 'Custom Key B configured';
+  }
+
+  Widget _buildTrailerExpansionTile({
+    required Map<String, dynamic> block,
+    required String hex,
+    required int blockNum,
+    required int absBlock,
+    required String keyType,
+    required bool sectorAuthenticated,
+  }) {
+    bool isExpanded = false;
+
+    return StatefulBuilder(
+      builder: (context, setState) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          child: Column(
+            children: [
+              GestureDetector(
+                onTap: () {
+                  setState(() {
+                    isExpanded = !isExpanded;
+                  });
+                },
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.shade200),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade100,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              isExpanded ? Icons.arrow_drop_down : Icons.arrow_right,
+                              color: Colors.orange.shade400,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Trailer',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.orange.shade400,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Block $blockNum',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                          Text(
+                            'Abs: $absBlock',
+                            style: const TextStyle(fontSize: 11, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                      const Spacer(),
+                      if (sectorAuthenticated)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: keyType == 'A' ? Colors.blue.shade100 : Colors.green.shade100,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(keyType == 'A' ? Icons.vpn_key : Icons.key, size: 12),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Key $keyType',
+                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                      const SizedBox(width: 8),
+                      Icon(
+                        isExpanded ? Icons.expand_less : Icons.expand_more,
+                        color: Colors.orange.shade400,
+                        size: 20,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (isExpanded) ...[
+                const SizedBox(height: 8),
+                _buildTrailerDetails(hex, blockNum, absBlock),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildTrailerDetails(String hex, int blockNum, int absBlock) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.teal.shade600,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline, size: 16, color: Colors.orange.shade400),
+              const SizedBox(width: 8),
+              Text(
+                'Trailer Block Details (Block $blockNum)',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange.shade800,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ..._parseTrailerBlock(hex),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.grey.shade300),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Full Hex Data:',
+                  style: TextStyle(fontWeight: FontWeight.w500, fontSize: 12),
+                ),
+                const SizedBox(height: 6),
+                SelectableText(
+                  hex,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${hex.length} characters (${hex.length ~/ 2} bytes)',
+                  style: const TextStyle(fontSize: 10, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNormalBlockRow({
+    required Map<String, dynamic> block,
+    required String hex,
+    required String text,
+    required int blockNum,
+    required bool isTrailer,
+    required bool isError,
+    required int absBlock,
+    required String keyType,
+    required bool sectorAuthenticated,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: isError
+            ? Colors.red.shade50
+            : (isTrailer ? Colors.orange.shade50 : Colors.grey.shade50),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: isError ? Colors.red.shade200 : (isTrailer ? Colors.orange.shade200 : Colors.grey.shade200),
+          color: isError
+              ? Colors.red.shade200
+              : (isTrailer ? Colors.orange.shade200 : Colors.grey.shade200),
         ),
       ),
       child: Column(
@@ -604,38 +1396,66 @@ class _ReadScreenState extends State<ReadScreen> {
           Row(
             children: [
               Chip(
-                label: Text(isTrailer ? 'Block $blockNum (Trailer)' : 'Block $blockNum'),
-                backgroundColor: isError ? Colors.red.shade100 : (isTrailer ? Colors.orange.shade100 : Colors.blue.shade100),
+                label: Text(
+                  isTrailer ? 'Block $blockNum (Trailer)' : 'Block $blockNum',
+                  style: TextStyle(
+                    fontWeight: isTrailer ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+                backgroundColor: isError
+                    ? Colors.red.shade100
+                    : (isTrailer ? Colors.orange.shade100 : Colors.blue.shade100),
                 visualDensity: VisualDensity.compact,
               ),
               const SizedBox(width: 8),
-              if (sectorAuthenticated) Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: keyType == 'A' ? Colors.blue.shade100 : Colors.green.shade100,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  children: [
-                    Icon(keyType == 'A' ? Icons.vpn_key : Icons.key, size: 12),
-                    const SizedBox(width: 4),
-                    Text('Key $keyType', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                  ],
-                ),
+              Text(
+                'Abs: $absBlock',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
+              const Spacer(),
+              if (sectorAuthenticated && !isError)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: keyType == 'A' ? Colors.blue.shade100 : Colors.green.shade100,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(keyType == 'A' ? Icons.vpn_key : Icons.key, size: 12),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Key $keyType',
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ),
-          const SizedBox(height: 6),
-          if (!isError) ...[
-            SelectableText('Hex: $hex', style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
-            const SizedBox(height: 4),
-            SelectableText('Text: "$text"', style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
-          ] else ...[
+          const SizedBox(height: 8),
+          if (isError) ...[
             Row(children: [
               const Icon(Icons.error, size: 14, color: Colors.red),
               const SizedBox(width: 4),
               Text(hex, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
             ]),
+          ]
+          else if (hex.isNotEmpty) ...[
+            SelectableText(
+              'Hex: $hex',
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            ),
+            const SizedBox(height: 4),
+            SelectableText(
+              'Text: "$text"',
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            ),
+          ] else ...[
+            const Text(
+              'No data',
+              style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey),
+            ),
           ],
         ],
       ),

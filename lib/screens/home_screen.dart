@@ -143,14 +143,7 @@ class HomeScreen extends StatelessWidget {
                     color: Colors.orange,
                     route: '/config',
                   ),
-                  _buildFeatureCard(
-                    context: context,
-                    icon: Icons.calculate,
-                    title: 'Calculator',
-                    subtitle: 'Access bits calc',
-                    color: Colors.purple,
-                    route: '/calculator',
-                  ),
+
                   _buildFeatureCard(
                     context: context,
                     icon: Icons.lock,

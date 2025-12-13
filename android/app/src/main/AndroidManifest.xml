@@ -2,8 +2,10 @@
     <uses-permission android:name="android.permission.NFC" />
     <uses-feature android:name="android.hardware.nfc" android:required="true" />
     <application
-        android:label="rfid_v1"
-        android:name="${applicationName}">
+        android:label="RFID Config"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        >
         <activity
             android:name=".MainActivity"
             android:launchMode="singleTop"
