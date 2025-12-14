@@ -3,6 +3,17 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/nfc_provider.dart';
 
+class UpperCaseTextFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    return TextEditingValue(
+      text: newValue.text.toUpperCase(),
+      selection: newValue.selection,
+    );
+  }
+}
+
 class ReadScreen extends StatefulWidget {
   const ReadScreen({super.key});
 
@@ -11,10 +22,10 @@ class ReadScreen extends StatefulWidget {
 }
 
 class _ReadScreenState extends State<ReadScreen> {
-  // Controllers for custom keys
-  final TextEditingController _keyAController = TextEditingController();
-  final TextEditingController _keyBController = TextEditingController();
-  bool _useCustomKeys = false;
+  // State variables for custom key arrays
+  final List<TextEditingController> _keyAControllers = [TextEditingController()];
+  final List<TextEditingController> _keyBControllers = [TextEditingController()];
+  bool _hasCustomKeys = false;
 
   @override
   void initState() {
@@ -22,13 +33,18 @@ class _ReadScreenState extends State<ReadScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final provider = Provider.of<NfcProvider>(context, listen: false);
       provider.startScan();
+      _loadCustomKeyArrays();
     });
   }
 
   @override
   void dispose() {
-    _keyAController.dispose();
-    _keyBController.dispose();
+    for (var controller in _keyAControllers) {
+      controller.dispose();
+    }
+    for (var controller in _keyBControllers) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -40,19 +56,507 @@ class _ReadScreenState extends State<ReadScreen> {
     return RegExp(r'^[0-9A-Fa-f]{12}$').hasMatch(cleanKey);
   }
 
-  // Load saved keys for current card
-  void _loadSavedKeys() {
+
+// Update _loadCustomKeyArrays method
+  void _loadCustomKeyArrays() async {
     final provider = Provider.of<NfcProvider>(context, listen: false);
-    final uid = provider.getCardInfo('uid', '');
+    await provider.loadCustomKeyArrays();
 
-    if (uid.isNotEmpty) {
-      // Try to load keys for this specific card
-      final keyA = provider.getKeyForCard(uid, 'A');
-      final keyB = provider.getKeyForCard(uid, 'B');
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
 
-      if (keyA != null) _keyAController.text = keyA;
-      if (keyB != null) _keyBController.text = keyB;
+      setState(() {
+        // Check if we have any custom keys
+        _hasCustomKeys = provider.customKeyArrayA.isNotEmpty ||
+            provider.customKeyArrayB.isNotEmpty;
+
+        // Load Key A array
+        _keyAControllers.clear();
+        final keyAArray = provider.customKeyArrayA;
+        for (final key in keyAArray) {
+          _keyAControllers.add(TextEditingController(text: key));
+        }
+        // Add empty controller for new input
+        _keyAControllers.add(TextEditingController());
+
+        // Load Key B array
+        _keyBControllers.clear();
+        final keyBArray = provider.customKeyArrayB;
+        for (final key in keyBArray) {
+          _keyBControllers.add(TextEditingController(text: key));
+        }
+        // Add empty controller for new input
+        _keyBControllers.add(TextEditingController());
+      });
+    });
+  }
+
+// Remove _hasCustomKeys variable declaration
+
+// Update _addKey method
+  void _addKey(String key, String keyType, NfcProvider provider) async {
+    final cleanKey = key.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+
+    if (cleanKey.length != 12) {
+      _showError('Key must be 12 hex characters');
+      return;
     }
+
+    final success = await provider.addCustomKeyToArray(cleanKey, keyType);
+
+    if (success && mounted) {
+      _loadCustomKeyArrays(); // Reload to refresh the display
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$keyType key added: $cleanKey'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+// Update _removeKey method (no _hasCustomKeys check needed)
+  void _removeKey(String key, String keyType, NfcProvider provider) async {
+    final cleanKey = key.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+
+    final success = await provider.removeCustomKeyFromArray(cleanKey, keyType);
+
+    if (success && mounted) {
+      _loadCustomKeyArrays(); // Reload to refresh the display
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$keyType key removed: $cleanKey'),
+          backgroundColor: Colors.orange,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+// Update _clearAllKeys method (no _hasCustomKeys check needed)
+  void _clearAllKeys(String keyType, NfcProvider provider) async {
+    await provider.clearCustomKeyArray(keyType);
+
+    if (mounted) {
+      _loadCustomKeyArrays(); // Reload to refresh the display
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('All Key $keyType cleared'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  // Read with custom keys
+  void _readWithCustomKeys(NfcProvider provider) async {
+    if (provider.customKeyArrayA.isEmpty && provider.customKeyArrayB.isEmpty) {
+      _showError('Please add at least one custom key');
+      return;
+    }
+
+    try {
+      await provider.startScanWithCustomKeyArrays();
+    } catch (e) {
+      _showError('Error reading with custom keys: $e');
+    }
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
+  void _copyToClipboard(BuildContext context, String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied: $text'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  // Build the custom keys section
+  Widget _buildCustomKeysSection(BuildContext context, NfcProvider provider) {
+    final keyAArray = provider.customKeyArrayA;
+    final keyBArray = provider.customKeyArrayB;
+
+    return Card(
+      elevation: 3,
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header with status indicator
+
+            Row(
+              children: [
+                Icon(
+                    Icons.vpn_key,
+                    color: provider.customKeyArrayA.isNotEmpty || provider.customKeyArrayB.isNotEmpty
+                        ? Colors.green
+                        : Colors.blue.shade800
+                ),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Custom Keys for Authentication',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                if (provider.customKeyArrayA.isNotEmpty || provider.customKeyArrayB.isNotEmpty) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.green.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.green.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.check_circle, size: 12, color: Colors.green),
+                        const SizedBox(width: 4),
+                        Text(
+                          '${provider.customKeyArrayA.length + provider.customKeyArrayB.length} keys active',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.green,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              provider.customKeyArrayA.isNotEmpty || provider.customKeyArrayB.isNotEmpty
+                  ? 'Custom keys will be automatically tried when scanning'
+                  : 'Add keys to try. Keys will be tested on all sectors.',
+              style: TextStyle(
+                color: provider.customKeyArrayA.isNotEmpty || provider.customKeyArrayB.isNotEmpty
+                    ? Colors.green.shade700
+                    : Colors.grey,
+                fontSize: 14,
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Key A Section
+            _buildKeySection(
+              title: 'Key A',
+              icon: Icons.vpn_key,
+              color: Colors.blue,
+              controllers: _keyAControllers,
+              keyArray: keyAArray,
+              keyType: 'A',
+              provider: provider,
+            ),
+
+            const SizedBox(height: 24),
+
+            // Key B Section
+            _buildKeySection(
+              title: 'Key B',
+              icon: Icons.key,
+              color: Colors.green,
+              controllers: _keyBControllers,
+              keyArray: keyBArray,
+              keyType: 'B',
+              provider: provider,
+            ),
+
+            const SizedBox(height: 20),
+
+            // Quick Add Common Keys
+            _buildQuickKeysSection(context, provider),
+
+            const SizedBox(height: 20),
+
+            // Action Buttons
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      if (_hasCustomKeys) {
+                        provider.startScanWithCustomKeyArrays(); // Force rescan
+                      } else {
+                        _showError('Please add at least one custom key first');
+                      }
+                    },
+                    icon: const Icon(Icons.nfc),
+                    label: const Text('Read with Custom Keys'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      backgroundColor: Colors.blue.shade800,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (value) {
+                    if (value == 'clear_a') {
+                      _clearAllKeys('A', provider);
+                    } else if (value == 'clear_b') {
+                      _clearAllKeys('B', provider);
+                    } else if (value == 'clear_all') {
+                      _clearAllKeys('A', provider);
+                      _clearAllKeys('B', provider);
+                    } else if (value == 'load_keys') {
+                      _loadCustomKeyArrays();
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
+                      value: 'load_keys',
+                      child: ListTile(
+                        leading: Icon(Icons.refresh),
+                        title: Text('Reload Keys'),
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'clear_a',
+                      child: ListTile(
+                        leading: Icon(Icons.delete, color: Colors.blue),
+                        title: Text('Clear All Key A'),
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'clear_b',
+                      child: ListTile(
+                        leading: Icon(Icons.delete, color: Colors.green),
+                        title: Text('Clear All Key B'),
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'clear_all',
+                      child: ListTile(
+                        leading: Icon(Icons.delete_sweep, color: Colors.red),
+                        title: Text('Clear All Keys', style: TextStyle(color: Colors.red)),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Build individual key section
+  Widget _buildKeySection({
+    required String title,
+    required IconData icon,
+    required Color color,
+    required List<TextEditingController> controllers,
+    required List<String> keyArray,
+    required String keyType,
+    required NfcProvider provider,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, color: color),
+            const SizedBox(width: 8),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${keyArray.length} keys',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: color,
+                ),
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 12),
+
+        // Saved Keys Chips
+        if (keyArray.isNotEmpty) ...[
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: keyArray.map((key) {
+              return Chip(
+                label: Text(
+                  key,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+                backgroundColor: color.withOpacity(0.1),
+                deleteIcon: const Icon(Icons.close, size: 16),
+                onDeleted: () => _removeKey(key, keyType, provider),
+                visualDensity: VisualDensity.compact,
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 16),
+        ],
+
+        // Add New Key Row
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: controllers.last,
+                decoration: InputDecoration(
+                  hintText: 'FFFFFFFFFFFF',
+                  labelText: 'Add new $title',
+                  prefixIcon: Icon(icon, color: color),
+                  border: const OutlineInputBorder(),
+                  errorText: controllers.last.text.isNotEmpty &&
+                      !_isValidHexKey(controllers.last.text)
+                      ? '12 hex characters'
+                      : null,
+                ),
+                style: const TextStyle(fontFamily: 'monospace'),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9A-Fa-f]')),
+                  LengthLimitingTextInputFormatter(12),
+                  UpperCaseTextFormatter(),
+                ],
+                textCapitalization: TextCapitalization.characters,
+                onChanged: (value) {
+                  // Auto-add when valid key is entered (optional)
+                  if (_isValidHexKey(value) && value.length == 12) {
+                    _addKey(value, keyType, provider);
+                  }
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            ElevatedButton(
+              onPressed: () {
+                final key = controllers.last.text.trim();
+                if (key.isNotEmpty && _isValidHexKey(key)) {
+                  _addKey(key, keyType, provider);
+                  controllers.last.clear();
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                shape: const CircleBorder(),
+                padding: const EdgeInsets.all(12),
+                backgroundColor: color,
+              ),
+              child: const Icon(Icons.add, color: Colors.white),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // Quick keys section
+  Widget _buildQuickKeysSection(BuildContext context, NfcProvider provider) {
+    final List<Map<String, dynamic>> commonKeys = [
+      {'label': 'Default', 'key': 'FFFFFFFFFFFF', 'color': Colors.blue},
+      {'label': 'Transport', 'key': 'A0A1A2A3A4A5', 'color': Colors.green},
+      {'label': 'D3F7', 'key': 'D3F7D3F7D3F7', 'color': Colors.orange},
+      {'label': 'Zeros', 'key': '000000000000', 'color': Colors.grey},
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Quick Add:',
+          style: TextStyle(fontWeight: FontWeight.w500, fontSize: 14),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: commonKeys.map((keyInfo) {
+            final String label = keyInfo['label'] as String;
+            final String key = keyInfo['key'] as String;
+            final Color color = keyInfo['color'] as Color;
+
+            return ElevatedButton(
+              onPressed: () {
+                _addKey(key, 'A', provider);
+                _addKey(key, 'B', provider);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: color.withOpacity(0.1),
+                foregroundColor: color,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                  side: BorderSide(color: color.withOpacity(0.3)),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.add, size: 14),
+                  const SizedBox(width: 4),
+                  Text(label),
+                  const SizedBox(width: 4),
+                  Text(
+                    key.substring(0, 6),
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  // Info row widget
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text('$label:', style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.grey)),
+          ),
+          Expanded(
+            child: SelectableText(
+              value,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -68,23 +572,10 @@ class _ReadScreenState extends State<ReadScreen> {
               Provider.of<NfcProvider>(context, listen: false).startScan();
             },
           ),
-          IconButton(
-            icon: const Icon(Icons.history),
-            onPressed: () {
-              _showLastScannedInfo(context);
-            },
-          ),
         ],
       ),
       body: Consumer<NfcProvider>(
         builder: (context, provider, child) {
-          // Load keys when card data is available
-          if (provider.cardData.isNotEmpty && !provider.isLoading) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              _loadSavedKeys();
-            });
-          }
-
           if (provider.isLoading) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -94,18 +585,11 @@ class _ReadScreenState extends State<ReadScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
-                    Icons.error,
-                    color: Colors.red,
-                    size: 60,
-                  ),
+                  const Icon(Icons.error, color: Colors.red, size: 60),
                   const SizedBox(height: 20),
                   const Text(
                     'NFC not available on this device',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 10),
                   const Text(
@@ -122,18 +606,15 @@ class _ReadScreenState extends State<ReadScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
-                    Icons.error,
-                    color: Colors.orange,
-                    size: 60,
-                  ),
+                  const Icon(Icons.error, color: Colors.orange, size: 60),
                   const SizedBox(height: 20),
-                  Text(
-                    provider.errorMessage,
-                    style: const TextStyle(
-                      fontSize: 16,
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Text(
+                      provider.errorMessage,
+                      style: const TextStyle(fontSize: 16),
+                      textAlign: TextAlign.center,
                     ),
-                    textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 20),
                   ElevatedButton(
@@ -145,692 +626,262 @@ class _ReadScreenState extends State<ReadScreen> {
             );
           }
 
-          // Use the new provider methods to get data
-          final blocks = provider.getBlocks();
-          final keyInfo = provider.getKeyInfo();
           final uid = provider.getCardInfo('uid', 'N/A');
           final type = provider.getCardInfo('type', 'N/A');
           final size = provider.getCardInfoInt('size', 0);
           final sectorCount = provider.getCardInfoInt('sectorCount', 0);
           final successfulSectors = provider.getCardInfoInt('successfulSectors', 0);
-          final fullUid = provider.getCardInfo('fullUid', uid);
+          final blocks = provider.getBlocks();
+          final keyInfo = provider.getKeyInfo();
+
+// In the "Ready to Scan" section of your build method
+          // In the "Ready to Scan" section of your build method, replace with:
 
           if (!provider.isLoading && provider.cardData.isEmpty) {
+            // Get the key arrays from provider
+            final keyAArray = provider.customKeyArrayA;
+            final keyBArray = provider.customKeyArrayB;
+            final hasCustomKeys = keyAArray.isNotEmpty || keyBArray.isNotEmpty;
+
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
-                    Icons.nfc,
-                    size: 80,
-                    color: Colors.blue.shade400,
+                      Icons.nfc,
+                      size: 80,
+                      color: hasCustomKeys ? Colors.green.shade600 : Colors.blue.shade400
                   ),
                   const SizedBox(height: 20),
-                  const Text(
-                    'Ready to Scan',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'Hold your Mifare Classic card near\nthe NFC antenna to read',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 16, color: Colors.grey),
-                  ),
-                  const SizedBox(height: 30),
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      provider.startScan();
-                    },
-                    icon: const Icon(Icons.search),
-                    label: const Text('Start Scanning'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                  Text(
+                    hasCustomKeys ? 'Ready to Scan with Custom Keys' : 'Ready to Scan',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: hasCustomKeys ? Colors.green.shade800 : Colors.black,
                     ),
                   ),
-                  const SizedBox(height: 20),
-                  if (provider.lastScannedUid.isNotEmpty) ...[
-                    const Text('Last detected:'),
-                    const SizedBox(height: 10),
-                    Text(
-                      provider.lastScannedUid,
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue,
+                  const SizedBox(height: 10),
+                  Text(
+                    hasCustomKeys
+                        ? 'Hold your card near the NFC antenna\n${keyAArray.length + keyBArray.length} custom keys will be tried'
+                        : 'Hold your Mifare Classic card near\nthe NFC antenna to read',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 16, color: Colors.grey),
+                  ),
+
+                  // Show custom keys summary if available
+                  if (hasCustomKeys) ...[
+                    const SizedBox(height: 20),
+                    Card(
+                      elevation: 2,
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          children: [
+                            const Text(
+                              'Custom Keys to try:',
+                              style: TextStyle(fontWeight: FontWeight.w500),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Column(
+                                  children: [
+                                    Icon(Icons.vpn_key, color: Colors.blue, size: 20),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '${keyAArray.length}',
+                                      style: const TextStyle(fontWeight: FontWeight.bold),
+                                    ),
+                                    const Text('Key A', style: TextStyle(fontSize: 12)),
+                                  ],
+                                ),
+                                const SizedBox(width: 24),
+                                Column(
+                                  children: [
+                                    Icon(Icons.key, color: Colors.green, size: 20),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '${keyBArray.length}',
+                                      style: const TextStyle(fontWeight: FontWeight.bold),
+                                    ),
+                                    const Text('Key B', style: TextStyle(fontSize: 12)),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ],
+
+                  const SizedBox(height: 30),
+                  ElevatedButton.icon(
+                    onPressed: () => provider.startScan(),
+                    icon: Icon(
+                      hasCustomKeys ? Icons.vpn_key : Icons.search,
+                      color: hasCustomKeys ? Colors.green : null,
+                    ),
+                    label: Text(
+                      hasCustomKeys ? 'Scan with Custom Keys' : 'Start Scanning',
+                      style: TextStyle(
+                        color: hasCustomKeys ? Colors.green.shade800 : null,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                      backgroundColor: hasCustomKeys ? Colors.green.shade50 : null,
+                      foregroundColor: hasCustomKeys ? Colors.green : null,
+                      side: hasCustomKeys ? BorderSide(color: Colors.green.shade300) : null,
+                    ),
+                  ),
                 ],
               ),
             );
           }
           return SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                children: [
-                  // Custom Keys Section
-                  Card(
-                    elevation: 3,
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // FIX 1: Add Expanded to this Row
-                          Row(
-                            children: [
-                              Icon(Icons.vpn_key, color: Colors.blue.shade800),
-                              const SizedBox(width: 8),
-                              Expanded(  // Add Expanded here
-                                child: const Text(
-                                  'Custom Keys for Authentication',
-                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  children: [
+                    // Custom Keys Section
+                    _buildCustomKeysSection(context, provider),
 
-                          // Custom keys toggle - ALREADY FIXED (good)
-                          Row(
-                            children: [
-                              Checkbox(
-                                value: _useCustomKeys,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _useCustomKeys = value ?? false;
-                                  });
-                                },
-                              ),
-                              Expanded(
-                                child: Text('Use custom keys for reading'),
-                              ),
-                              const SizedBox(width: 10),
-                              IconButton(
-                                icon: Icon(Icons.save, size: 20),
-                                onPressed: _useCustomKeys ? () => _saveKeys(context) : null,
-                                tooltip: 'Save keys for this card',
-                              ),
-                            ],
-                          ),
+                    const SizedBox(height: 20),
 
-                          if (_useCustomKeys) ...[
-                            const SizedBox(height: 12),
-                            _buildKeyInputField(
-                              controller: _keyAController,
-                              label: 'Key A (6 bytes, 12 hex chars)',
-                              hintText: 'FFFFFFFFFFFF',
-                              isKeyA: true,
-                            ),
-                            const SizedBox(height: 12),
-                            _buildKeyInputField(
-                              controller: _keyBController,
-                              label: 'Key B (6 bytes, 12 hex chars)',
-                              hintText: 'FFFFFFFFFFFF',
-                              isKeyA: false,
-                            ),
-                            const SizedBox(height: 12),
+                    // Card Information
+                    Card(
+                      elevation: 3,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
                             Row(
                               children: [
-                                Icon(Icons.info, color: Colors.blue.shade800, size: 16),
-                                const SizedBox(width: 8),
-                                Expanded(
+                                const Expanded(
                                   child: Text(
-                                    'Keys will be used for the next read operation. Leave empty to use default FFFFFFFFFFFF.',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey.shade700,
-                                    ),
+                                    'Card Information',
+                                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                                   ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.copy, size: 20),
+                                  onPressed: () {
+                                    _copyToClipboard(context, uid);
+                                  },
                                 ),
                               ],
                             ),
                             const SizedBox(height: 12),
-                            Wrap(
-                              spacing: 8,
-                              children: [
-                                _buildExampleKeyChip('Default Key', 'FFFFFFFFFFFF'),
-                                _buildExampleKeyChip('All Zeros', '000000000000'),
-                                _buildExampleKeyChip('All As', 'AAAAAAAAAAAA'),
-                              ],
-                            ),
+                            _buildInfoRow('UID', uid),
+                            _buildInfoRow('Type', type),
+                            _buildInfoRow('Size', '$size bytes'),
+                            _buildInfoRow('Sectors', '$sectorCount'),
+                            _buildInfoRow('Successfully Read', '$successfulSectors sectors'),
                           ],
-
-                          // Show saved keys if available
-                          Consumer<NfcProvider>(
-                            builder: (context, provider, child) {
-                              final savedKeys = provider.getKeysForCard(uid);
-                              if (savedKeys.isNotEmpty && !_useCustomKeys) {
-                                return Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const SizedBox(height: 12),
-                                    const Text(
-                                      'Saved keys for this card:',
-                                      style: TextStyle(fontWeight: FontWeight.w500, color: Colors.green),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Wrap(
-                                      spacing: 8,
-                                      runSpacing: 8,
-                                      children: savedKeys.entries.map((entry) {
-                                        return Chip(
-                                          label: Text('Key ${entry.key}: ${entry.value}'),
-                                          avatar: Icon(entry.key == 'A' ? Icons.vpn_key : Icons.key),
-                                          backgroundColor: entry.key == 'A' ? Colors.blue.shade100 : Colors.green.shade100,
-                                          deleteIcon: const Icon(Icons.close, size: 16),
-                                          onDeleted: () => _removeKey(context, entry.key),
-                                        );
-                                      }).toList(),
-                                    ),
-                                  ],
-                                );
-                              }
-                              return const SizedBox.shrink();
-                            },
-                          ),
-
-                          // Read with custom keys button
-                          if (_useCustomKeys) ...[
-                            const SizedBox(height: 16),
-                            ElevatedButton.icon(
-                              onPressed: _readWithCustomKeys,
-                              icon: const Icon(Icons.nfc),
-                              label: const Text('Read with Custom Keys'),
-                              style: ElevatedButton.styleFrom(
-                                minimumSize: const Size(double.infinity, 50),
-                                backgroundColor: Colors.blue.shade800,
-                              ),
-                            ),
-                          ],
-                        ],
+                        ),
                       ),
                     ),
-                  ),
 
-                  const SizedBox(height: 20),
+                    const SizedBox(height: 20),
 
-                  // Card Information
-                  Card(
-                    elevation: 3,
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
+                    // Authentication Status
+                    if (keyInfo.isNotEmpty) ...[
+                      Card(
+                        elevation: 3,
+                        color: Colors.blue.shade50,
+                        child: Padding(
+                          padding: const EdgeInsets.all(12.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(  // Add Expanded here
-                                child: const Text(
-                                  'Card Information',
-                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                              // Show UID copy button
-                              IconButton(
-                                icon: const Icon(Icons.copy, size: 20),
-                                onPressed: () {
-                                  _copyToClipboard(context, uid);
-                                },
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          _buildInfoRow('UID', uid),
-                          _buildInfoRow('Type', type),
-                          _buildInfoRow('Size', '$size bytes'),
-                          _buildInfoRow('Sectors', '$sectorCount'),
-                          _buildInfoRow('Successfully Read', '$successfulSectors sectors'),
-
-                          // Last scanned info
-                          if (provider.lastScannedUid.isNotEmpty &&
-                              provider.lastScannedUid != uid) ...[
-                            const Divider(height: 30),
-                            // FIX 2: Add Expanded to this Row
-                            Row(
-                              children: [
-                                Icon(Icons.history, color: Colors.grey.shade600, size: 18),
-                                const SizedBox(width: 8),
-                                Expanded(  // Add Expanded here
-                                  child: const Text(
-                                    'Previous Scan:',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.grey,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Colors.grey.shade100,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Row(
+                              const Row(
                                 children: [
+                                  Icon(Icons.verified_user, color: Colors.blue),
+                                  SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
-                                      provider.lastScannedUid,
-                                      style: const TextStyle(
-                                        fontFamily: 'monospace',
-                                        fontSize: 14,
-                                      ),
+                                      'Authentication Status',
+                                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue),
                                     ),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.copy, size: 18),
-                                    onPressed: () {
-                                      _copyToClipboard(context, provider.lastScannedUid);
-                                    },
                                   ),
                                 ],
                               ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
+                              const SizedBox(height: 12),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: keyInfo.map((keyData) {
+                                  final sector = keyData['sector'] as int? ?? 0;
+                                  final keyType = keyData['keyType'] as String? ?? '';
+                                  final authenticated = keyData['authenticated'] as bool? ?? false;
 
-                  const SizedBox(height: 20),
-
-                  // Authentication Status
-                  if (keyInfo.isNotEmpty) Card(
-                    elevation: 3,
-                    color: Colors.blue.shade50,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // FIX 3: Add Expanded to this Row
-                          Row(
-                            children: [
-                              Icon(Icons.verified_user, color: Colors.blue.shade800),
-                              const SizedBox(width: 8),
-                              Expanded(  // Add Expanded here
-                                child: const Text(
-                                  'Authentication Status',
-                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue),
-                                ),
+                                  return Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: authenticated ? Colors.green.shade100 : Colors.red.shade100,
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(
+                                        color: authenticated ? Colors.green.shade300 : Colors.red.shade300,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          'S$sector',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Icon(
+                                          keyType == 'A' ? Icons.vpn_key : Icons.key,
+                                          size: 14,
+                                          color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
+                                        ),
+                                        if (authenticated) ...[
+                                          const SizedBox(width: 4),
+                                          const Text(
+                                            '✓',
+                                            style: TextStyle(
+                                              color: Colors.green,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  );
+                                }).toList(),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: keyInfo.map((keyData) {
-                              final sector = keyData['sector'] ?? 0;
-                              final keyType = keyData['keyType'] ?? '';
-                              final authenticated = keyData['authenticated'] ?? false;
-                              final key = keyData['key'] ?? '';
-
-                              return Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: authenticated ? Colors.green.shade100 : Colors.red.shade100,
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(
-                                    color: authenticated ? Colors.green.shade300 : Colors.red.shade300,
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      'S$sector',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Icon(
-                                      keyType == 'A' ? Icons.vpn_key : Icons.key,
-                                      size: 14,
-                                      color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
-                                    ),
-                                    if (authenticated && key.isNotEmpty) ...[
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        '✓',
-                                        style: TextStyle(
-                                          color: Colors.green.shade800,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  // Blocks List - FIX the Text widget if it's in a Row
-                  Row(
-                    children: [
-                      Expanded(  // Add Expanded if this is in a Row
-                        child: const Text(
-                          'Memory Blocks',
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                         ),
                       ),
+                      const SizedBox(height: 20),
                     ],
-                  ),
-                  const SizedBox(height: 12),
 
-                  if (blocks.isNotEmpty) ..._buildSectorViews(blocks, keyInfo),
-                ],
+                    // Memory Blocks
+                    if (blocks.isNotEmpty) ...[
+                      const Text(
+                        'Memory Blocks',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 12),
+                      ..._buildSectorViews(blocks, keyInfo),
+                    ],
+                  ],
+                ),
               ),
-            ),
           );
         },
       ),
-    );
-  }
-
-  // Read with custom keys method
-  void _readWithCustomKeys() {
-    final provider = Provider.of<NfcProvider>(context, listen: false);
-
-    // Validate keys
-    final keyAText = _keyAController.text.trim().toUpperCase();
-    final keyBText = _keyBController.text.trim().toUpperCase();
-
-    if (keyAText.isNotEmpty && !_isValidHexKey(keyAText)) {
-      _showError('Invalid Key A format. Must be exactly 12 hex characters.');
-      return;
-    }
-
-    if (keyBText.isNotEmpty && !_isValidHexKey(keyBText)) {
-      _showError('Invalid Key B format. Must be exactly 12 hex characters.');
-      return;
-    }
-
-    // Prepare keys (use null if empty to use defaults)
-    final String? keyA = keyAText.isEmpty ? null : keyAText;
-    final String? keyB = keyBText.isEmpty ? null : keyBText;
-
-    // Start scan with custom keys
-    provider.startScanWithCustomKeys(keyA: keyA, keyB: keyB);
-  }
-
-  // Save keys for current card
-  void _saveKeys(BuildContext context) {
-    final provider = Provider.of<NfcProvider>(context, listen: false);
-    final uid = provider.getCardInfo('uid', '');
-
-    if (uid.isEmpty || uid == 'N/A') {
-      _showError('No card detected. Please scan a card first.');
-      return;
-    }
-
-    final keyAText = _keyAController.text.trim().toUpperCase();
-    final keyBText = _keyBController.text.trim().toUpperCase();
-
-    if (keyAText.isNotEmpty && !_isValidHexKey(keyAText)) {
-      _showError('Invalid Key A format. Must be exactly 12 hex characters.');
-      return;
-    }
-
-    if (keyBText.isNotEmpty && !_isValidHexKey(keyBText)) {
-      _showError('Invalid Key B format. Must be exactly 12 hex characters.');
-      return;
-    }
-
-    // Save keys
-    if (keyAText.isNotEmpty) {
-      provider.saveKeyForCard(uid, 'A', keyAText);
-    }
-
-    if (keyBText.isNotEmpty) {
-      provider.saveKeyForCard(uid, 'B', keyBText);
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text('Keys saved for this card'),
-        backgroundColor: Colors.green,
-        duration: const Duration(seconds: 2),
-      ),
-    );
-
-    // Refresh UI
-    setState(() {});
-  }
-
-  void _removeKey(BuildContext context, String keyType) async {
-    final provider = Provider.of<NfcProvider>(context, listen: false);
-    final uid = provider.getCardInfo('uid', '');
-
-    if (uid.isEmpty || uid == 'N/A') {
-      _showError('No card detected.');
-      return;
-    }
-
-    final success = await provider.removeKeyForCard(uid, keyType);
-
-    if (success && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Key $keyType removed'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      // Clear controller if we removed that key
-      if (keyType == 'A') {
-        _keyAController.clear();
-      } else {
-        _keyBController.clear();
-      }
-      setState(() {});
-    }
-  }
-
-  // Build key input field
-  Widget _buildKeyInputField({
-    required TextEditingController controller,
-    required String label,
-    required String hintText,
-    required bool isKeyA,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        const SizedBox(height: 4),
-        TextField(
-          controller: controller,
-          decoration: InputDecoration(
-            hintText: hintText,
-            prefixIcon: Icon(isKeyA ? Icons.vpn_key : Icons.key),
-            suffixIcon: IconButton(
-              icon: const Icon(Icons.clear),
-              onPressed: () {
-                controller.text = 'FFFFFFFFFFFF';
-                setState(() {});
-              },
-            ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-            filled: true,
-            fillColor: _isValidHexKey(controller.text)
-                ? Colors.green.shade50
-                : Colors.grey.shade50,
-            errorText: controller.text.isNotEmpty &&
-                !_isValidHexKey(controller.text)
-                ? 'Invalid key format (12 hex chars like AABBCCDDEEFF)'
-                : null,
-          ),
-          style: const TextStyle(
-            fontFamily: 'monospace',
-            letterSpacing: 1.2,
-          ),
-          keyboardType: TextInputType.text,
-          textCapitalization: TextCapitalization.characters,
-          onChanged: (value) {
-            setState(() {});
-          },
-          inputFormatters: [
-            FilteringTextInputFormatter.allow(RegExp(r'[0-9A-Fa-f]')),
-            LengthLimitingTextInputFormatter(12),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildExampleKeyChip(String label, String key) {
-    return GestureDetector(
-      onTap: () {
-        setState(() {
-          _keyAController.text = key;
-          _keyBController.text = key;
-        });
-      },
-      child: Chip(
-        label: Text(label),
-        avatar: const Icon(Icons.key, size: 16),
-        backgroundColor: Colors.amber.shade100,
-        labelStyle: const TextStyle(fontSize: 12),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      ),
-    );
-  }
-
-  void _copyToClipboard(BuildContext context, String text) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Copied: $text'),
-        duration: const Duration(seconds: 2),
-      ),
-    );
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.red,
-      ),
-    );
-  }
-
-  // Dialog to show last scanned info
-  void _showLastScannedInfo(BuildContext context) {
-    final provider = Provider.of<NfcProvider>(context, listen: false);
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.history),
-            SizedBox(width: 10),
-            Text('Scan History'),
-          ],
-        ),
-        content: provider.lastScannedUid.isNotEmpty
-            ? Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Last scanned card UID:'),
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: SelectableText(
-                provider.lastScannedUid,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                ElevatedButton.icon(
-                  onPressed: () {
-                    _copyToClipboard(context, provider.lastScannedUid);
-                  },
-                  icon: const Icon(Icons.copy),
-                  label: const Text('Copy'),
-                ),
-                const SizedBox(width: 10),
-                TextButton.icon(
-                  onPressed: () async {
-                    await provider.clearLastScannedUid();
-                    if (context.mounted) {
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Scan history cleared'),
-                          backgroundColor: Colors.orange,
-                        ),
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.delete, color: Colors.red),
-                  label: const Text('Clear', style: TextStyle(color: Colors.red)),
-                ),
-              ],
-            ),
-          ],
-        )
-            : const Text('No scan history available.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInfoRow(String label, String value) {
-    return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4.0),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 150,
-              child: Text('$label:', style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.grey)),
-            ),
-            Expanded(
-              child: SelectableText(
-                value,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
-              ),
-            ),
-          ],
-        ),
     );
   }
 
@@ -843,7 +894,7 @@ class _ReadScreenState extends State<ReadScreen> {
 
     return sectors.entries.map((entry) {
       final sectorKeyInfo = keyInfo.firstWhere(
-            (info) => info['sector'] == entry.key,
+            (info) => (info['sector'] as int?) == entry.key,
         orElse: () => {'keyType': '', 'key': '', 'authenticated': false},
       );
       return _buildSectorCard(entry.key, entry.value, sectorKeyInfo);
@@ -851,9 +902,9 @@ class _ReadScreenState extends State<ReadScreen> {
   }
 
   Widget _buildSectorCard(int sector, List<Map<String, dynamic>> blocks, Map<String, dynamic> keyInfo) {
-    final keyType = keyInfo['keyType'] ?? '';
-    final keyHex = keyInfo['key'] ?? '';
-    final authenticated = keyInfo['authenticated'] ?? false;
+    final keyType = keyInfo['keyType'] as String? ?? '';
+    final keyHex = keyInfo['key'] as String? ?? '';
+    final authenticated = keyInfo['authenticated'] as bool? ?? false;
 
     String readingInfo = 'Not authenticated';
     if (authenticated) {
@@ -914,468 +965,13 @@ class _ReadScreenState extends State<ReadScreen> {
   }
 
   Widget _buildBlockRow(Map<String, dynamic> block, String keyType, bool sectorAuthenticated) {
-    final hex = block['hex'] ?? '';
-    final text = block['text'] ?? '';
-    final blockNum = block['block'] ?? 0;
-    final isTrailer = block['isTrailer'] ?? false;
+    final hex = block['hex'] as String? ?? '';
+    final text = block['text'] as String? ?? '';
+    final blockNum = block['block'] as int? ?? 0;
+    final isTrailer = block['isTrailer'] as bool? ?? false;
     final isError = !sectorAuthenticated || hex == 'AUTH ERROR' || hex == 'READ ERROR';
-    final absBlock = block['absBlock'] ?? 0;
+    final absBlock = block['absBlock'] as int? ?? 0;
 
-    if (isTrailer && !isError) {
-      return _buildTrailerExpansionTile(
-        block: block,
-        hex: hex,
-        blockNum: blockNum,
-        absBlock: absBlock,
-        keyType: keyType,
-        sectorAuthenticated: sectorAuthenticated,
-      );
-    }
-
-    return _buildNormalBlockRow(
-      block: block,
-      hex: hex,
-      text: text,
-      blockNum: blockNum,
-      isTrailer: isTrailer,
-      isError: isError,
-      absBlock: absBlock,
-      keyType: keyType,
-      sectorAuthenticated: sectorAuthenticated,
-    );
-  }
-
-  // ... Rest of your existing methods (parseTrailerBlock, buildTrailerPart, etc.) ...
-  // These remain the same as in your original code
-  List<Widget> _parseTrailerBlock(String hex) {
-    final List<Widget> parts = [];
-
-    // Key A (bytes 0-5 = chars 0-11)
-    if (hex.length >= 12) {
-      parts.add(_buildTrailerPart(
-        label: 'Key A (6 bytes)',
-        hexValue: hex.substring(0, 12),
-        description: 'Authentication Key A',
-        color: Colors.blue,
-        startIndex: 0,
-        endIndex: 5,
-        isHidden: hex.substring(0, 12) == '000000000000',
-      ));
-      parts.add(const SizedBox(height: 8));
-    }
-
-    // Access Bits (bytes 6-8 = chars 12-17) + User Byte (byte 9 = chars 18-19)
-    if (hex.length >= 20) {
-      final accessBitsHex = hex.substring(12, 18);
-      final userByteHex = hex.length >= 20 ? hex.substring(18, 20) : '';
-
-      parts.add(_buildTrailerPart(
-        label: 'Access Bits (3 bytes)',
-        hexValue: accessBitsHex,
-        description: 'Controls sector permissions',
-        color: Colors.orange,
-        startIndex: 6,
-        endIndex: 8,
-        note: _getAccessBitsNote(accessBitsHex),
-      ));
-      parts.add(const SizedBox(height: 8));
-
-      parts.add(_buildTrailerPart(
-        label: 'User Byte (1 byte)',
-        hexValue: userByteHex,
-        description: 'General purpose byte (B9)',
-        color: Colors.purple,
-        startIndex: 9,
-        endIndex: 9,
-      ));
-      parts.add(const SizedBox(height: 8));
-    }
-
-    // Key B (bytes 10-15 = chars 20-31)
-    if (hex.length >= 32) {
-      final keyBHex = hex.substring(20, 32);
-      final accessBitsHex = hex.length >= 18 ? hex.substring(12, 18) : '';
-
-      parts.add(_buildTrailerPart(
-        label: 'Key B (6 bytes)',
-        hexValue: keyBHex,
-        description: 'Authentication Key B',
-        color: Colors.green,
-        startIndex: 10,
-        endIndex: 15,
-        note: _getKeyBNote(accessBitsHex, keyBHex),
-      ));
-    }
-
-    return parts;
-  }
-
-  Widget _buildTrailerPart({
-    required String label,
-    required String hexValue,
-    required String description,
-    required Color color,
-    required int startIndex,
-    required int endIndex,
-    String? note,
-    bool isHidden = false,
-  }) {
-    final isKeyA = label.contains('Key A');
-    final isKeyB = label.contains('Key B');
-
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: color,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  'B$startIndex-${endIndex}',
-                  style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Text(
-                          label,
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                            color: color,
-                          ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          '(${hexValue.length ~/ 2} bytes)',
-                          style: const TextStyle(fontSize: 10, color: Colors.grey),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      description,
-                      style: const TextStyle(fontSize: 10, color: Colors.grey),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: Colors.grey.shade300),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  isKeyA ? Icons.vpn_key : (isKeyB ? Icons.key : Icons.lock),
-                  size: 14,
-                  color: isHidden ? Colors.red : color,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: SelectableText(
-                    hexValue,
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: isHidden ? Colors.red : Colors.black,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (note != null || isHidden) ...[
-            const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color: isHidden ? Colors.red.shade50 : Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    isHidden ? Icons.warning : Icons.info,
-                    size: 12,
-                    color: isHidden ? Colors.red : Colors.blue,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      note ?? (isHidden
-                          ? 'Key is hidden (reads as zeros). This is normal if access bits restrict key reading.'
-                          : ''),
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: isHidden ? Colors.red : Colors.blue,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  String _getAccessBitsNote(String accessBitsHex) {
-    if (accessBitsHex.length < 6) return 'Incomplete access bits';
-
-    final Map<String, String> commonAccessBits = {
-      '078069': 'Default: Key A RW, Key B RW, Key B readable',
-      '078869': 'Read Only: Key A RO, Key B RO, Key B readable',
-      '8F0F07': 'Key A RW, Key B RO, Access RO, Key B readable',
-      '8F0F08': 'Key A RW, Key B RO, Access RO, Key B hidden',
-      '778F69': 'Key B Required: Key A RW, Key B RW, Key B readable',
-      '778F00': 'Fully Locked: Key A NO, Key B NO, Key B hidden',
-    };
-
-    final description = commonAccessBits[accessBitsHex] ?? 'Custom configuration';
-
-    final isDangerous = accessBitsHex == '778F00' ||
-        accessBitsHex == '08778F' ||
-        accessBitsHex.contains('8F');
-
-    if (isDangerous) {
-      return '$description. ⚠️ Warning: This configuration may lock the sector!';
-    }
-
-    return description;
-  }
-
-  String _getKeyBNote(String accessBitsHex, String keyBHex) {
-    if (keyBHex == '000000000000') {
-      return 'Key B reads as zeros - may be hidden by access bits or disabled';
-    }
-    if (keyBHex == 'FFFFFFFFFFFF') {
-      return 'Key B is factory default (FFFFFFFFFFFF)';
-    }
-
-    if (accessBitsHex.length >= 6) {
-      try {
-        final byte6 = int.tryParse(accessBitsHex.substring(4, 6), radix: 16) ?? 0;
-        if ((byte6 & 0xF0) == 0x80) {
-          return 'Key B is configured as NOT readable (hidden) by access bits';
-        }
-      } catch (e) {
-        // Ignore parse errors
-      }
-    }
-
-    return 'Custom Key B configured';
-  }
-
-  Widget _buildTrailerExpansionTile({
-    required Map<String, dynamic> block,
-    required String hex,
-    required int blockNum,
-    required int absBlock,
-    required String keyType,
-    required bool sectorAuthenticated,
-  }) {
-    bool isExpanded = false;
-
-    return StatefulBuilder(
-      builder: (context, setState) {
-        return Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          child: Column(
-            children: [
-              GestureDetector(
-                onTap: () {
-                  setState(() {
-                    isExpanded = !isExpanded;
-                  });
-                },
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.orange.shade200),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.shade100,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(
-                              isExpanded ? Icons.arrow_drop_down : Icons.arrow_right,
-                              color: Colors.orange.shade400,
-                              size: 20,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              'Trailer',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.orange.shade400,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Block $blockNum',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                          ),
-                          Text(
-                            'Abs: $absBlock',
-                            style: const TextStyle(fontSize: 11, color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                      const Spacer(),
-                      if (sectorAuthenticated)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: keyType == 'A' ? Colors.blue.shade100 : Colors.green.shade100,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(keyType == 'A' ? Icons.vpn_key : Icons.key, size: 12),
-                              const SizedBox(width: 4),
-                              Text(
-                                'Key $keyType',
-                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
-                        ),
-                      const SizedBox(width: 8),
-                      Icon(
-                        isExpanded ? Icons.expand_less : Icons.expand_more,
-                        color: Colors.orange.shade400,
-                        size: 20,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              if (isExpanded) ...[
-                const SizedBox(height: 8),
-                _buildTrailerDetails(hex, blockNum, absBlock),
-              ],
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildTrailerDetails(String hex, int blockNum, int absBlock) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.teal.shade600,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.orange.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.info_outline, size: 16, color: Colors.orange.shade400),
-              const SizedBox(width: 8),
-              Text(
-                'Trailer Block Details (Block $blockNum)',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.orange.shade800,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          ..._parseTrailerBlock(hex),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: Colors.grey.shade300),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Full Hex Data:',
-                  style: TextStyle(fontWeight: FontWeight.w500, fontSize: 12),
-                ),
-                const SizedBox(height: 6),
-                SelectableText(
-                  hex,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '${hex.length} characters (${hex.length ~/ 2} bytes)',
-                  style: const TextStyle(fontSize: 10, color: Colors.grey),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNormalBlockRow({
-    required Map<String, dynamic> block,
-    required String hex,
-    required String text,
-    required int blockNum,
-    required bool isTrailer,
-    required bool isError,
-    required int absBlock,
-    required String keyType,
-    required bool sectorAuthenticated,
-  }) {
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
@@ -1412,25 +1008,6 @@ class _ReadScreenState extends State<ReadScreen> {
                 'Abs: $absBlock',
                 style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
-              const Spacer(),
-              if (sectorAuthenticated && !isError)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: keyType == 'A' ? Colors.blue.shade100 : Colors.green.shade100,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(keyType == 'A' ? Icons.vpn_key : Icons.key, size: 12),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Key $keyType',
-                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
-                ),
             ],
           ),
           const SizedBox(height: 8),

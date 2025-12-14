@@ -17,6 +17,7 @@ import io.flutter.plugin.common.MethodChannel
 import android.os.Handler
 import android.os.Looper
 import java.io.IOException
+import org.json.JSONArray
 
 object MifareClassicPlugin {
 
@@ -219,7 +220,8 @@ object MifareClassicPlugin {
                         result.error("CONFIG_ERROR", "Configuration failed: ${e.message}", null)
                     }
                 }
-
+                "saveCustomKeyArrays" -> saveCustomKeyArrays(call, result)
+                "loadCustomKeyArrays" -> loadCustomKeyArrays(call, result)
                 "saveCardKeysToStorage" -> saveCardKeysToStorage(call, result)
                 "loadCardKeysFromStorage" -> loadCardKeysFromStorage(call, result)
                 "setSectorKeyBatch" -> setSectorKeyBatch(call, result)
@@ -926,6 +928,90 @@ object MifareClassicPlugin {
             } ?: false
         } catch (e: Exception) {
             false
+        }
+    }
+
+    private fun saveCustomKeyArrays(call: MethodCall, result: Result) {
+        try {
+            val keys = call.argument<Map<String, Any>>("keys") ?: emptyMap()
+            val context = applicationContext ?: return
+
+            val sharedPref = context.getSharedPreferences("mifare_custom_arrays", Context.MODE_PRIVATE)
+
+            // Convert to JSON
+            val jsonObject = JSONObject()
+
+            if (keys.containsKey("keyA")) {
+                val keyAArray = keys["keyA"] as? List<*> ?: emptyList<String>()
+                val jsonArray = JSONArray()
+                keyAArray.forEach { key ->
+                    if (key is String) {
+                        jsonArray.put(key)
+                    }
+                }
+                jsonObject.put("keyA", jsonArray)
+            }
+
+            if (keys.containsKey("keyB")) {
+                val keyBArray = keys["keyB"] as? List<*> ?: emptyList<String>()
+                val jsonArray = JSONArray()
+                keyBArray.forEach { key ->
+                    if (key is String) {
+                        jsonArray.put(key)
+                    }
+                }
+                jsonObject.put("keyB", jsonArray)
+            }
+
+            sharedPref.edit().putString("custom_key_arrays", jsonObject.toString()).apply()
+
+            println("DEBUG: Saved custom key arrays")
+            result.success(true)
+
+        } catch (e: Exception) {
+            println("DEBUG: Error saving custom key arrays: ${e.message}")
+            result.error("SAVE_ARRAYS_ERROR", "Failed to save arrays", e.message)
+        }
+    }
+
+    private fun loadCustomKeyArrays(call: MethodCall, result: Result) {
+        try {
+            val context = applicationContext ?: return
+            val sharedPref = context.getSharedPreferences("mifare_custom_arrays", Context.MODE_PRIVATE)
+
+            val jsonString = sharedPref.getString("custom_key_arrays", "{}")
+            val jsonObject = JSONObject(jsonString ?: "{}")
+
+            val resultMap = mutableMapOf<String, Any>()
+
+            if (jsonObject.has("keyA")) {
+                val keyAArray = jsonObject.getJSONArray("keyA")
+                val keyAList = mutableListOf<String>()
+                for (i in 0 until keyAArray.length()) {
+                    keyAList.add(keyAArray.getString(i))
+                }
+                resultMap["keyA"] = keyAList
+            } else {
+                resultMap["keyA"] = emptyList<String>()
+            }
+
+            if (jsonObject.has("keyB")) {
+                val keyBArray = jsonObject.getJSONArray("keyB")
+                val keyBList = mutableListOf<String>()
+                for (i in 0 until keyBArray.length()) {
+                    keyBList.add(keyBArray.getString(i))
+                }
+                resultMap["keyB"] = keyBList
+            } else {
+                resultMap["keyB"] = emptyList<String>()
+            }
+
+            println("DEBUG: Loaded custom key arrays")
+            result.success(resultMap)
+
+        } catch (e: Exception) {
+            println("DEBUG: Error loading custom key arrays: ${e.message}")
+            result.error("LOAD_ARRAYS_ERROR", "Failed to load arrays", e.message)
         }
     }
 

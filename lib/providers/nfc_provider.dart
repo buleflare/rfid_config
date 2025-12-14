@@ -317,23 +317,7 @@ class NfcProvider with ChangeNotifier {
   Stream<dynamic> get tagStream => _tagStream ?? const Stream.empty();
 
   // Start scanning
-  Future<bool> startScan() async {
-    try {
-      _isLoading = true;
-      _errorMessage = '';
-      notifyListeners();
 
-      final result = await _methodChannel.invokeMethod('startScan');
-      _isLoading = false;
-      notifyListeners();
-      return result == true;
-    } on PlatformException catch (e) {
-      _errorMessage = e.message ?? 'Unknown error';
-      _isLoading = false;
-      notifyListeners();
-      return false;
-    }
-  }
 
   List<Map<String, dynamic>> getBlocks() {
     final blocks = _cardData['blocks'];
@@ -601,6 +585,223 @@ class NfcProvider with ChangeNotifier {
     }
   }
 
+// Multi-key array storage
+  List<String> _customKeyArrayA = [];
+  List<String> _customKeyArrayB = [];
+
+// Getters
+  List<String> get customKeyArrayA => List.from(_customKeyArrayA);
+  List<String> get customKeyArrayB => List.from(_customKeyArrayB);
+
+// Load saved custom key arrays
+  Future<void> loadCustomKeyArrays() async {
+    try {
+      final result = await _methodChannel.invokeMethod('loadCustomKeyArrays');
+      if (result != null && result is Map) {
+        final keyMap = Map<String, dynamic>.from(result);
+
+        if (keyMap.containsKey('keyA')) {
+          final keysA = List<String>.from(keyMap['keyA'] ?? []);
+          _customKeyArrayA = keysA;
+        }
+
+        if (keyMap.containsKey('keyB')) {
+          final keysB = List<String>.from(keyMap['keyB'] ?? []);
+          _customKeyArrayB = keysB;
+        }
+
+        print('DEBUG: Loaded custom key arrays - A: ${_customKeyArrayA.length}, B: ${_customKeyArrayB.length}');
+      }
+    } catch (e) {
+      print('DEBUG: Error loading custom key arrays: $e');
+    }
+  }
+
+// Save custom key arrays
+  Future<void> saveCustomKeyArrays() async {
+    try {
+      final keyMap = {
+        'keyA': _customKeyArrayA,
+        'keyB': _customKeyArrayB,
+      };
+
+      await _methodChannel.invokeMethod('saveCustomKeyArrays', {
+        'keys': keyMap,
+      });
+
+      print('DEBUG: Saved custom key arrays to storage');
+    } catch (e) {
+      print('DEBUG: Error saving custom key arrays: $e');
+    }
+  }
+
+// Add key to array
+  Future<bool> addCustomKeyToArray(String key, String keyType) async {
+    try {
+      // Validate key
+      final cleanKey = key.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+      if (cleanKey.length != 12) {
+        _errorMessage = 'Key must be 12 hex characters';
+        return false;
+      }
+
+      // Check if already exists
+      if (keyType == 'A') {
+        if (!_customKeyArrayA.contains(cleanKey)) {
+          _customKeyArrayA.add(cleanKey);
+        }
+      } else {
+        if (!_customKeyArrayB.contains(cleanKey)) {
+          _customKeyArrayB.add(cleanKey);
+        }
+      }
+
+      // Save to storage
+      await saveCustomKeyArrays();
+
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print('DEBUG: Error adding custom key to array: $e');
+      return false;
+    }
+  }
+
+// Remove key from array
+  Future<bool> removeCustomKeyFromArray(String key, String keyType) async {
+    try {
+      if (keyType == 'A') {
+        _customKeyArrayA.remove(key);
+      } else {
+        _customKeyArrayB.remove(key);
+      }
+
+      // Save to storage
+      await saveCustomKeyArrays();
+
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print('DEBUG: Error removing custom key from array: $e');
+      return false;
+    }
+  }
+
+// Clear all keys from array
+  Future<void> clearCustomKeyArray(String keyType) async {
+    try {
+      if (keyType == 'A') {
+        _customKeyArrayA.clear();
+      } else {
+        _customKeyArrayB.clear();
+      }
+
+      await saveCustomKeyArrays();
+      notifyListeners();
+    } catch (e) {
+      print('DEBUG: Error clearing custom key array: $e');
+    }
+  }
+
+
+  // In NfcProvider, modify the startScan method to automatically use custom keys
+
+// Update the existing startScan method
+  Future<bool> startScan() async {
+    try {
+      print('DEBUG: startScan called');
+
+      // Clear previous data
+      clearCardData();
+
+      // Set loading state
+      _isLoading = true;
+      _errorMessage = '';
+      notifyListeners();
+
+      // Apply custom keys from arrays if available
+      await _applyCustomKeysFromArrays();
+
+      // Call the native method
+      final result = await _methodChannel.invokeMethod('startScan');
+
+      _isLoading = false;
+      notifyListeners();
+      return result == true;
+    } on PlatformException catch (e) {
+      _errorMessage = e.message ?? 'Unknown error';
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+// New private method to apply custom keys from arrays
+  Future<void> _applyCustomKeysFromArrays() async {
+    try {
+      // Build keys map from arrays
+      final Map<String, String> keysMap = {};
+
+      // Add all Key A from array to all sectors
+      for (final key in _customKeyArrayA) {
+        for (int sector = 0; sector < 16; sector++) {
+          keysMap['A_$sector'] = key;
+        }
+      }
+
+      // Add all Key B from array to all sectors
+      for (final key in _customKeyArrayB) {
+        for (int sector = 0; sector < 16; sector++) {
+          keysMap['B_$sector'] = key;
+        }
+      }
+
+      if (keysMap.isNotEmpty) {
+        await _methodChannel.invokeMethod('setCustomKeys', {'keys': keysMap});
+        print('DEBUG: Auto-applied ${keysMap.length} custom keys from arrays');
+      } else {
+        // Clear any previous custom keys
+        await _methodChannel.invokeMethod('clearCustomKeys');
+        print('DEBUG: No custom keys to apply, using default keys');
+      }
+    } catch (e) {
+      print('DEBUG: Error applying custom keys: $e');
+    }
+  }
+
+// You can keep the startScanWithCustomKeyArrays method for manual use
+  Future<void> startScanWithCustomKeyArrays() async {
+    try {
+      print('DEBUG: Manual scan with custom keys called');
+
+      // Clear previous data
+      clearCardData();
+
+      // Set loading state
+      _isLoading = true;
+      _errorMessage = '';
+      notifyListeners();
+
+      // Apply custom keys
+      await _applyCustomKeysFromArrays();
+
+      // Call the native method
+      final result = await _methodChannel.invokeMethod('startScan');
+
+      if (result == true) {
+        print('DEBUG: Manual scan with custom keys started');
+      } else {
+        _errorMessage = 'Failed to start scan';
+        _isLoading = false;
+        notifyListeners();
+      }
+    } catch (e) {
+      print('DEBUG: Error in startScanWithCustomKeyArrays: $e');
+      _errorMessage = 'Error scanning with custom keys: $e';
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
   // Get custom keys from plugin
   Future<Map<String, String>> getCustomKeys() async {
     try {
