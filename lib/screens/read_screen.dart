@@ -743,142 +743,142 @@ class _ReadScreenState extends State<ReadScreen> {
             );
           }
           return SingleChildScrollView(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  children: [
-                    // Custom Keys Section
-                    _buildCustomKeysSection(context, provider),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                children: [
+                  // Custom Keys Section
+                  _buildCustomKeysSection(context, provider),
 
-                    const SizedBox(height: 20),
+                  const SizedBox(height: 20),
 
-                    // Card Information
+                  // Card Information
+                  Card(
+                    elevation: 3,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Expanded(
+                                child: Text(
+                                  'Card Information',
+                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.copy, size: 20),
+                                onPressed: () {
+                                  _copyToClipboard(context, uid);
+                                },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          _buildInfoRow('UID', uid),
+                          _buildInfoRow('Type', type),
+                          _buildInfoRow('Size', '$size bytes'),
+                          _buildInfoRow('Sectors', '$sectorCount'),
+                          _buildInfoRow('Successfully Read', '$successfulSectors sectors'),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Authentication Status
+                  if (keyInfo.isNotEmpty) ...[
                     Card(
                       elevation: 3,
+                      color: Colors.blue.shade50,
                       child: Padding(
-                        padding: const EdgeInsets.all(16.0),
+                        padding: const EdgeInsets.all(12.0),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Row(
+                            const Row(
                               children: [
-                                const Expanded(
+                                Icon(Icons.verified_user, color: Colors.blue),
+                                SizedBox(width: 8),
+                                Expanded(
                                   child: Text(
-                                    'Card Information',
-                                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                    'Authentication Status',
+                                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue),
                                   ),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.copy, size: 20),
-                                  onPressed: () {
-                                    _copyToClipboard(context, uid);
-                                  },
                                 ),
                               ],
                             ),
                             const SizedBox(height: 12),
-                            _buildInfoRow('UID', uid),
-                            _buildInfoRow('Type', type),
-                            _buildInfoRow('Size', '$size bytes'),
-                            _buildInfoRow('Sectors', '$sectorCount'),
-                            _buildInfoRow('Successfully Read', '$successfulSectors sectors'),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: keyInfo.map((keyData) {
+                                final sector = keyData['sector'] as int? ?? 0;
+                                final keyType = keyData['keyType'] as String? ?? '';
+                                final authenticated = keyData['authenticated'] as bool? ?? false;
+
+                                return Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: authenticated ? Colors.green.shade100 : Colors.red.shade100,
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(
+                                      color: authenticated ? Colors.green.shade300 : Colors.red.shade300,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        'S$sector',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Icon(
+                                        keyType == 'A' ? Icons.vpn_key : Icons.key,
+                                        size: 14,
+                                        color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
+                                      ),
+                                      if (authenticated) ...[
+                                        const SizedBox(width: 4),
+                                        const Text(
+                                          '✓',
+                                          style: TextStyle(
+                                            color: Colors.green,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                );
+                              }).toList(),
+                            ),
                           ],
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 20),
-
-                    // Authentication Status
-                    if (keyInfo.isNotEmpty) ...[
-                      Card(
-                        elevation: 3,
-                        color: Colors.blue.shade50,
-                        child: Padding(
-                          padding: const EdgeInsets.all(12.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Row(
-                                children: [
-                                  Icon(Icons.verified_user, color: Colors.blue),
-                                  SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      'Authentication Status',
-                                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: keyInfo.map((keyData) {
-                                  final sector = keyData['sector'] as int? ?? 0;
-                                  final keyType = keyData['keyType'] as String? ?? '';
-                                  final authenticated = keyData['authenticated'] as bool? ?? false;
-
-                                  return Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: authenticated ? Colors.green.shade100 : Colors.red.shade100,
-                                      borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(
-                                        color: authenticated ? Colors.green.shade300 : Colors.red.shade300,
-                                      ),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Text(
-                                          'S$sector',
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Icon(
-                                          keyType == 'A' ? Icons.vpn_key : Icons.key,
-                                          size: 14,
-                                          color: authenticated ? Colors.green.shade800 : Colors.red.shade800,
-                                        ),
-                                        if (authenticated) ...[
-                                          const SizedBox(width: 4),
-                                          const Text(
-                                            '✓',
-                                            style: TextStyle(
-                                              color: Colors.green,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  );
-                                }).toList(),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                    ],
-
-                    // Memory Blocks
-                    if (blocks.isNotEmpty) ...[
-                      const Text(
-                        'Memory Blocks',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 12),
-                      ..._buildSectorViews(blocks, keyInfo),
-                    ],
                   ],
-                ),
+
+                  // Memory Blocks
+                  if (blocks.isNotEmpty) ...[
+                    const Text(
+                      'Memory Blocks',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 12),
+                    ..._buildSectorViews(blocks, keyInfo),
+                  ],
+                ],
               ),
+            ),
           );
         },
       ),

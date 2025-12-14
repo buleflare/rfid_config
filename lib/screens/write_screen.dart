@@ -69,16 +69,14 @@ class _WriteScreenState extends State<WriteScreen> {
       if (sector == 0) {
         // Sector 0: Block 0 is manufacturer (read-only), blocks 1-2 are data blocks
         _availableBlocks = [1, 2];
-      } else if (sector >= 1 && sector <= 4) {
+      } else if (sector >= 1 && sector <= 15) {
         // Sectors 1-4: Blocks 0-2 are data blocks (3 blocks per sector)
         _availableBlocks = [0, 1, 2];
-      } else if (sector >= 5 && sector <= 15) {
-        // Sectors 5-15: Blocks 0-14 are data blocks (15 blocks per sector)
-        _availableBlocks = List.generate(15, (index) => index);
-      } else {
-        // Invalid sector, default to sector 0 blocks
-        _availableBlocks = [1, 2];
       }
+      else {
+        // Invalid sector, default to sector 0 blocks
+        _availableBlocks = [0];
+       }
 
       // If current block is not in available blocks, reset to first available
       final currentBlock = int.tryParse(_blockController.text) ?? 1;
