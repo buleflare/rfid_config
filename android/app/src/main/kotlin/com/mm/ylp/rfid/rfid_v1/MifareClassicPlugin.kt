@@ -26,8 +26,8 @@ object MifareClassicPlugin {
     private var isReading = false
 
     // Storage for custom keys per sector
-    private val customKeysA = mutableMapOf<Int, ByteArray>()
-    private val customKeysB = mutableMapOf<Int, ByteArray>()
+    private val customKeysA = mutableMapOf<Int, MutableList<ByteArray>>()
+    private val customKeysB = mutableMapOf<Int, MutableList<ByteArray>>()
 
     // Track which key was used for each sector
     private val lastUsedKeyType = mutableMapOf<Int, String>()
@@ -127,10 +127,10 @@ object MifareClassicPlugin {
                         }
 
                         if (keyType.uppercase() == "A") {
-                            customKeysA[sector] = keyBytes
+                            customKeysA[sector] = mutableListOf(keyBytes)  // Create list with single element
                             println("DEBUG: Set custom Key A for sector $sector: $keyHex")
                         } else {
-                            customKeysB[sector] = keyBytes
+                            customKeysB[sector] = mutableListOf(keyBytes)  // Create list with single element
                             println("DEBUG: Set custom Key B for sector $sector: $keyHex")
                         }
                         result.success(true)
@@ -149,11 +149,16 @@ object MifareClassicPlugin {
 
                 "getCustomKeys" -> {
                     val keysMap = mutableMapOf<String, String>()
-                    customKeysA.forEach { (sector, key) ->
-                        keysMap["A_$sector"] = bytesToHex(key)
+                    customKeysA.forEach { (sector, keyList) ->
+                        // Handle multiple keys - you might want to decide which key to return
+                        if (keyList.isNotEmpty()) {
+                            keysMap["A_$sector"] = bytesToHex(keyList[0])  // Return first key
+                        }
                     }
-                    customKeysB.forEach { (sector, key) ->
-                        keysMap["B_$sector"] = bytesToHex(key)
+                    customKeysB.forEach { (sector, keyList) ->
+                        if (keyList.isNotEmpty()) {
+                            keysMap["B_$sector"] = bytesToHex(keyList[0])  // Return first key
+                        }
                     }
                     result.success(keysMap)
                 }
@@ -315,7 +320,7 @@ object MifareClassicPlugin {
                 println("DEBUG: Configuration written to sector $sector")
 
                 // 1. Update in-memory keys
-                customKeysA[sector] = newKeyABytes
+                customKeysA[sector] = mutableListOf(newKeyABytes)  // FIXED: Create list
 
                 // 2. Save to PERMANENT storage
                 val uid = bytesToHex(tag.id) // Get UID from current tag
@@ -361,9 +366,9 @@ object MifareClassicPlugin {
             // Also update in-memory storage
             val keyBytes = hexStringToByteArray(key)
             if (keyType == "A") {
-                customKeysA[sector] = keyBytes
+                customKeysA[sector] = mutableListOf(keyBytes)  // FIXED: Create list with single element
             } else {
-                customKeysB[sector] = keyBytes
+                customKeysB[sector] = mutableListOf(keyBytes)  // FIXED: Create list with single element
             }
 
         } catch (e: Exception) {
@@ -399,9 +404,9 @@ object MifareClassicPlugin {
                         if (sector != null) {
                             val keyBytes = hexStringToByteArray(value)
                             if (keyType == "A") {
-                                customKeysA[sector] = keyBytes
+                                customKeysA[sector] = mutableListOf(keyBytes)  // FIXED: Create list
                             } else {
-                                customKeysB[sector] = keyBytes
+                                customKeysB[sector] = mutableListOf(keyBytes)  // FIXED: Create list
                             }
                         }
                     }
@@ -626,12 +631,12 @@ object MifareClassicPlugin {
                     val keyBytes = hexStringToByteArray(cleanHex)
 
                     if (keyType == "A") {
-                        customKeysA[sector] = keyBytes
+                        customKeysA[sector] = mutableListOf(keyBytes)  // FIXED: Create list
                         println("DEBUG: Set custom Key A for sector $sector: $cleanHex")
                     } else if (keyType == "B") {
-                        customKeysB[sector] = keyBytes
+                        customKeysB[sector] = mutableListOf(keyBytes)  // FIXED: Create list
                         println("DEBUG: Set custom Key B for sector $sector: $cleanHex")
-                    } else {
+                    }else {
                         println("DEBUG: Unknown key type: $keyType")
                     }
                 } else {
@@ -723,30 +728,36 @@ object MifareClassicPlugin {
                 var authenticated = false
                 var usedKeyHex = ""
 
-                // Try custom Key A
-                customKeysA[sector]?.let { key ->
-                    try {
-                        if (mifare.authenticateSectorWithKeyA(sector, key)) {
-                            authenticated = true
-                            usedKeyHex = bytesToHex(key)
-                            println("DEBUG: Sector $sector authenticated with custom Key A: $usedKeyHex")
+                // Try custom Key A - FIXED
+                customKeysA[sector]?.let { keyList ->  // Get the list
+                    for (keyBytes in keyList) {  // Use regular for loop instead of .forEach
+                        try {
+                            if (mifare.authenticateSectorWithKeyA(sector, keyBytes)) {
+                                authenticated = true
+                                usedKeyHex = bytesToHex(keyBytes)
+                                println("DEBUG: Sector $sector authenticated with custom Key A: $usedKeyHex")
+                                break  // Now this is allowed inside a for loop
+                            }
+                        } catch (e: Exception) {
+                            println("DEBUG: Custom Key A failed: ${e.message}")
                         }
-                    } catch (e: Exception) {
-                        println("DEBUG: Custom Key A failed: ${e.message}")
                     }
                 }
 
-                // Try custom Key B
+// Try custom Key B - FIXED
                 if (!authenticated) {
-                    customKeysB[sector]?.let { key ->
-                        try {
-                            if (mifare.authenticateSectorWithKeyB(sector, key)) {
-                                authenticated = true
-                                usedKeyHex = bytesToHex(key)
-                                println("DEBUG: Sector $sector authenticated with custom Key B: $usedKeyHex")
+                    customKeysB[sector]?.let { keyList ->
+                        for (keyBytes in keyList) {  // Use regular for loop instead of .forEach
+                            try {
+                                if (mifare.authenticateSectorWithKeyB(sector, keyBytes)) {
+                                    authenticated = true
+                                    usedKeyHex = bytesToHex(keyBytes)
+                                    println("DEBUG: Sector $sector authenticated with custom Key B: $usedKeyHex")
+                                    break  // Now this is allowed inside a for loop
+                                }
+                            } catch (e: Exception) {
+                                println("DEBUG: Custom Key B failed: ${e.message}")
                             }
-                        } catch (e: Exception) {
-                            println("DEBUG: Custom Key B failed: ${e.message}")
                         }
                     }
                 }
@@ -845,7 +856,8 @@ object MifareClassicPlugin {
         println("DEBUG: Attempting to authenticate sector $sector for write")
 
         // Try custom Key A from temp map
-        tempKeysA[sector]?.let { key ->
+        // Try custom Key A from temp map
+        tempKeysA[sector]?.let { key ->  // This is ByteArray (from temp map), not MutableList
             try {
                 if (mifare.authenticateSectorWithKeyA(sector, key)) {
                     val keyHex = bytesToHex(key)
@@ -857,8 +869,8 @@ object MifareClassicPlugin {
             }
         }
 
-        // Try custom Key B from temp map
-        tempKeysB[sector]?.let { key ->
+// Try custom Key B from temp map
+        tempKeysB[sector]?.let { key ->  // This is ByteArray (from temp map), not MutableList
             try {
                 if (mifare.authenticateSectorWithKeyB(sector, key)) {
                     val keyHex = bytesToHex(key)
@@ -1018,33 +1030,33 @@ object MifareClassicPlugin {
     private fun authenticateSectorWithTracking(mifare: MifareClassic, sector: Int): Pair<Boolean, String> {
         println("DEBUG: Attempting to authenticate sector $sector")
 
-        // Try custom Key A
-        customKeysA[sector]?.let { key ->
+        // Try custom Key A from all stored keys for this sector
+        customKeysA[sector]?.forEachIndexed { index, keyBytes ->  // FIXED: keyBytes, not key
             try {
-                if (mifare.authenticateSectorWithKeyA(sector, key)) {
-                    val keyHex = bytesToHex(key)
+                if (mifare.authenticateSectorWithKeyA(sector, keyBytes)) {  // FIXED: Use keyBytes
+                    val keyHex = bytesToHex(keyBytes)  // FIXED: Use keyBytes
                     lastUsedKeyType[sector] = "A"
                     lastUsedKeyHex[sector] = keyHex
-                    println("DEBUG: Sector $sector authenticated with custom Key A: $keyHex")
+                    println("DEBUG: Sector $sector authenticated with custom Key A[$index]: $keyHex")
                     return Pair(true, keyHex)
                 }
             } catch (e: Exception) {
-                println("DEBUG: Custom Key A failed: ${e.message}")
+                println("DEBUG: Custom Key A[$index] failed: ${e.message}")
             }
         }
 
-        // Try custom Key B
-        customKeysB[sector]?.let { key ->
+        // Try custom Key B from all stored keys for this sector
+        customKeysB[sector]?.forEachIndexed { index, keyBytes ->  // FIXED: keyBytes, not key
             try {
-                if (mifare.authenticateSectorWithKeyB(sector, key)) {
-                    val keyHex = bytesToHex(key)
+                if (mifare.authenticateSectorWithKeyB(sector, keyBytes)) {  // FIXED: Use keyBytes
+                    val keyHex = bytesToHex(keyBytes)  // FIXED: Use keyBytes
                     lastUsedKeyType[sector] = "B"
                     lastUsedKeyHex[sector] = keyHex
-                    println("DEBUG: Sector $sector authenticated with custom Key B: $keyHex")
+                    println("DEBUG: Sector $sector authenticated with custom Key B[$index]: $keyHex")
                     return Pair(true, keyHex)
                 }
             } catch (e: Exception) {
-                println("DEBUG: Custom Key B failed: ${e.message}")
+                println("DEBUG: Custom Key B[$index] failed: ${e.message}")
             }
         }
 
@@ -1136,29 +1148,42 @@ object MifareClassicPlugin {
                     } else {
                         var tempAuthenticated = false
 
-                        customKeysA[sector]?.let { key ->
-                            try {
-                                tempAuthenticated = mifare.authenticateSectorWithKeyA(sector, key)
-                                if (tempAuthenticated) {
-                                    usedKeyType = "A"
-                                    usedKeyHex = bytesToHex(key)
-                                    lastUsedKeyType[sector] = "A"
-                                    lastUsedKeyHex[sector] = usedKeyHex
+                        customKeysA[sector]?.let { keyList ->
+                            for (keyBytes in keyList) {
+                                try {
+                                    tempAuthenticated = mifare.authenticateSectorWithKeyA(sector, keyBytes)
+                                    if (tempAuthenticated) {
+                                        usedKeyType = "A"
+                                        usedKeyHex = bytesToHex(keyBytes)
+                                        lastUsedKeyType[sector] = "A"
+                                        lastUsedKeyHex[sector] = usedKeyHex
+                                        break
+                                    }
+                                } catch (e: Exception) {
+                                    println("DEBUG: Key A authentication failed: ${e.message}")
                                 }
-                            } catch (e: Exception) { }
+                            }
                         }
 
                         if (!tempAuthenticated) {
-                            customKeysB[sector]?.let { key ->
-                                try {
-                                    tempAuthenticated = mifare.authenticateSectorWithKeyB(sector, key)
-                                    if (tempAuthenticated) {
-                                        usedKeyType = "B"
-                                        usedKeyHex = bytesToHex(key)
-                                        lastUsedKeyType[sector] = "B"
-                                        lastUsedKeyHex[sector] = usedKeyHex
+                            customKeysB[sector]?.let { keyList ->  // ✅ Get the list first
+                                for (keyBytes in keyList) {
+                                    try {
+                                        tempAuthenticated = mifare.authenticateSectorWithKeyB(
+                                            sector,
+                                            keyBytes
+                                        )  // Use keyBytes
+                                        if (tempAuthenticated) {
+                                            usedKeyType = "B"
+                                            usedKeyHex = bytesToHex(keyBytes)  // Use keyBytes
+                                            lastUsedKeyType[sector] = "B"
+                                            lastUsedKeyHex[sector] = usedKeyHex
+                                            break
+                                        }
+                                    } catch (e: Exception) {
+                                        println("DEBUG: Key B authentication failed: ${e.message}")
                                     }
-                                } catch (e: Exception) { }
+                                }
                             }
                         }
 
@@ -1352,9 +1377,9 @@ object MifareClassicPlugin {
             val keyBytes = hexStringToByteArray(key)
             for (sector in 0..15) {
                 if (keyType == "A") {
-                    customKeysA[sector] = keyBytes
+                    customKeysA[sector] = mutableListOf(keyBytes)  // FIXED: Create list
                 } else {
-                    customKeysB[sector] = keyBytes
+                    customKeysB[sector] = mutableListOf(keyBytes)  // FIXED: Create list
                 }
             }
 
@@ -1438,57 +1463,94 @@ object MifareClassicPlugin {
             println("DEBUG: Error loading saved keys from storage: ${e.message}")
         }
     }
-
     private fun setCustomKeys(call: MethodCall, result: Result) {
         try {
             val keysMap = call.argument<Map<String, String>>("keys")
+            val multipleKeys = call.argument<Boolean>("multipleKeys") ?: false
 
             if (keysMap != null) {
                 println("DEBUG: Setting custom keys from Flutter")
+                println("DEBUG: Multiple keys mode: $multipleKeys")
 
-                // Clear existing custom keys first
-                customKeysA.clear()
-                customKeysB.clear()
+                if (multipleKeys) {
+                    // Parse keys with unique identifiers
+                    keysMap.forEach { (keyString, hexKey) ->
+                        try {
+                            // Key format: "A_0_0" or "B_3_1" (type_sector_index)
+                            val parts = keyString.split("_")
+                            if (parts.size == 3) {
+                                val keyType = parts[0].uppercase()
+                                val sector = try {
+                                    parts[1].toInt()
+                                } catch (e: NumberFormatException) {
+                                    println("DEBUG: Invalid sector in key string: $keyString")
+                                    return@forEach
+                                }
+                                val index = parts[2].toIntOrNull() ?: 0
 
-                // Parse and set the keys
-                keysMap.forEach { (keyString, hexKey) ->
-                    try {
-                        // Key format: "A_0" or "B_3" (type_sector)
-                        val parts = keyString.split("_")
-                        if (parts.size == 2) {
-                            val keyType = parts[0].uppercase()
-                            val sector = try {
-                                parts[1].toInt()
-                            } catch (e: NumberFormatException) {
-                                println("DEBUG: Invalid sector in key string: $keyString")
-                                return@forEach
+                                // Clean the hex key
+                                val cleanHex = hexKey.replace("\\s".toRegex(), "").uppercase()
+
+                                // Validate hex key length
+                                if (cleanHex.length != 12) {
+                                    println("DEBUG: Invalid key length for $keyString: $cleanHex")
+                                    return@forEach
+                                }
+
+                                val keyBytes = hexStringToByteArray(cleanHex)
+
+                                if (keyType == "A") {
+                                    // Store multiple keys per sector
+                                    if (!customKeysA.containsKey(sector)) {
+                                        customKeysA[sector] = mutableListOf()  // Initialize as MutableList
+                                    }
+                                    customKeysA[sector]!!.add(keyBytes)  // Now .add() will work
+                                    println("DEBUG: Added custom Key A[$index] for sector $sector: $cleanHex")
+                                } else if (keyType == "B") {
+                                    if (!customKeysB.containsKey(sector)) {
+                                        customKeysB[sector] = mutableListOf()  // Initialize as MutableList
+                                    }
+                                    customKeysB[sector]!!.add(keyBytes)  // Now .add() will work
+                                    println("DEBUG: Added custom Key B[$index] for sector $sector: $cleanHex")
+                                }
                             }
-
-                            // Clean the hex key
-                            val cleanHex = hexKey.replace("\\s".toRegex(), "").uppercase()
-
-                            // Validate hex key length
-                            if (cleanHex.length != 12) {
-                                println("DEBUG: Invalid key length for $keyString: $cleanHex (expected 12 hex chars)")
-                                return@forEach
-                            }
-
-                            val keyBytes = hexStringToByteArray(cleanHex)
-
-                            if (keyType == "A") {
-                                customKeysA[sector] = keyBytes
-                                println("DEBUG: Set custom Key A for sector $sector: $cleanHex")
-                            } else if (keyType == "B") {
-                                customKeysB[sector] = keyBytes
-                                println("DEBUG: Set custom Key B for sector $sector: $cleanHex")
-                            }
+                        } catch (e: Exception) {
+                            println("DEBUG: Failed to parse key $keyString: ${e.message}")
                         }
-                    } catch (e: Exception) {
-                        println("DEBUG: Failed to parse key $keyString: ${e.message}")
+                    }
+
+                    // Calculate total keys correctly
+                    val totalKeyA = customKeysA.values.sumOf { it.size }
+                    val totalKeyB = customKeysB.values.sumOf { it.size }
+                    println("DEBUG: Successfully set $totalKeyA Key A and $totalKeyB Key B entries")
+                } else {
+                    // Original single-key logic
+                    customKeysA.clear()
+                    customKeysB.clear()
+
+                    keysMap.forEach { (keyString, hexKey) ->
+                        try {
+                            val parts = keyString.split("_")
+                            if (parts.size == 2) {
+                                val keyType = parts[0].uppercase()
+                                val sector = parts[1].toInt()
+                                val cleanHex = hexKey.replace("\\s".toRegex(), "").uppercase()
+                                val keyBytes = hexStringToByteArray(cleanHex)
+
+                                if (keyType == "A") {
+                                    customKeysA[sector] = mutableListOf(keyBytes)  // Single key in list
+                                    println("DEBUG: Set custom Key A for sector $sector: $cleanHex")
+                                } else if (keyType == "B") {
+                                    customKeysB[sector] = mutableListOf(keyBytes)  // Single key in list
+                                    println("DEBUG: Set custom Key B for sector $sector: $cleanHex")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            println("DEBUG: Failed to parse key $keyString: ${e.message}")
+                        }
                     }
                 }
 
-                println("DEBUG: Successfully set ${customKeysA.size} Key A and ${customKeysB.size} Key B")
                 result.success(true)
             } else {
                 result.error("INVALID_ARGS", "No keys provided", null)
@@ -1498,4 +1560,5 @@ object MifareClassicPlugin {
             result.error("SET_CUSTOM_KEYS_ERROR", "Failed to set custom keys", e.message)
         }
     }
+
 }

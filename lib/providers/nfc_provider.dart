@@ -252,7 +252,7 @@ class NfcProvider with ChangeNotifier {
       notifyListeners();
     }
   }
-  
+
   // Add this to track UID when tag is detected
   void _updateLastDetectedUid(String uid) {
     _lastDetectedUid = uid;
@@ -703,13 +703,12 @@ class NfcProvider with ChangeNotifier {
     }
   }
 
-
-  // In NfcProvider, modify the startScan method to automatically use custom keys
-
-// Update the existing startScan method
   Future<bool> startScan() async {
     try {
       print('DEBUG: startScan called');
+
+      // Reset tag connection first
+      await _resetTagConnection();
 
       // Clear previous data
       clearCardData();
@@ -719,8 +718,11 @@ class NfcProvider with ChangeNotifier {
       _errorMessage = '';
       notifyListeners();
 
-      // Apply custom keys from arrays if available
+      // Apply custom keys from arrays
       await _applyCustomKeysFromArrays();
+
+      // Small delay before starting scan
+      await Future.delayed(Duration(milliseconds: 500));
 
       // Call the native method
       final result = await _methodChannel.invokeMethod('startScan');
@@ -739,36 +741,62 @@ class NfcProvider with ChangeNotifier {
 // New private method to apply custom keys from arrays
   Future<void> _applyCustomKeysFromArrays() async {
     try {
-      // Build keys map from arrays
+      // Build keys map from arrays - TEST EACH KEY PROPERLY
       final Map<String, String> keysMap = {};
 
-      // Add all Key A from array to all sectors
-      for (final key in _customKeyArrayA) {
-        for (int sector = 0; sector < 16; sector++) {
-          keysMap['A_$sector'] = key;
+      // For Key A array: Test each key sequentially
+      if (_customKeyArrayA.isNotEmpty) {
+        // Instead of overwriting all sectors, we need a smarter approach
+        // Use all keys for testing, but don't overwrite
+        for (int i = 0; i < _customKeyArrayA.length; i++) {
+          final key = _customKeyArrayA[i];
+          // Add each key to all sectors
+          for (int sector = 0; sector < 16; sector++) {
+            keysMap['A_${sector}_$i'] = key; // Unique key identifier
+          }
         }
       }
 
-      // Add all Key B from array to all sectors
-      for (final key in _customKeyArrayB) {
-        for (int sector = 0; sector < 16; sector++) {
-          keysMap['B_$sector'] = key;
+      // For Key B array
+      if (_customKeyArrayB.isNotEmpty) {
+        for (int i = 0; i < _customKeyArrayB.length; i++) {
+          final key = _customKeyArrayB[i];
+          for (int sector = 0; sector < 16; sector++) {
+            keysMap['B_${sector}_$i'] = key; // Unique key identifier
+          }
         }
       }
 
       if (keysMap.isNotEmpty) {
-        await _methodChannel.invokeMethod('setCustomKeys', {'keys': keysMap});
         print('DEBUG: Auto-applied ${keysMap.length} custom keys from arrays');
+        print('DEBUG: Key A count: ${_customKeyArrayA.length}');
+        print('DEBUG: Key B count: ${_customKeyArrayB.length}');
+
+        // Send to Android with a flag indicating multiple keys
+        await _methodChannel.invokeMethod('setCustomKeys', {
+          'keys': keysMap,
+          'multipleKeys': true, // Add this flag
+        });
       } else {
-        // Clear any previous custom keys
         await _methodChannel.invokeMethod('clearCustomKeys');
-        print('DEBUG: No custom keys to apply, using default keys');
+        print('DEBUG: No custom keys to apply');
       }
     } catch (e) {
       print('DEBUG: Error applying custom keys: $e');
     }
   }
 
+  Future<void> _resetTagConnection() async {
+    try {
+      // Clear any existing tag connection
+      await _methodChannel.invokeMethod('clearCurrentTag');
+
+      // Small delay to allow NFC to reset
+      await Future.delayed(Duration(milliseconds: 300));
+    } catch (e) {
+      print('DEBUG: Error resetting tag connection: $e');
+    }
+  }
 // You can keep the startScanWithCustomKeyArrays method for manual use
   Future<void> startScanWithCustomKeyArrays() async {
     try {
