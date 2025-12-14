@@ -652,9 +652,6 @@ class _ConfigScreenState extends State<ConfigScreen> {
     return null;
   }
 
-
-
-
   Widget _buildTemplateChip(String label, VoidCallback onTap, {
     Color color = Colors.blue,
     bool enabled = true,

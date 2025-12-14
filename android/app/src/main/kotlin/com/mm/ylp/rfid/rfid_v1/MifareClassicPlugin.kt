@@ -73,6 +73,36 @@ object MifareClassicPlugin {
                     }
                 }
 
+                "saveSectorKey" -> {
+                    val uid = call.argument<String>("uid") ?: ""
+                    val sector = call.argument<Int>("sector") ?: -1
+                    val keyType = call.argument<String>("keyType") ?: "A"
+                    val key = call.argument<String>("key") ?: ""
+
+                    if (uid.isEmpty() || sector < 0 || key.isEmpty()) {
+                        result.error("INVALID_ARGS", "Missing or invalid arguments", null)
+                        return@setMethodCallHandler
+                    }
+
+                    try {
+                        saveSectorKeyToStorage(uid, sector, keyType, key)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("SAVE_ERROR", "Failed to save key: ${e.message}", null)
+                    }
+                }
+
+                "loadKeysForCard" -> {
+                    val uid = call.argument<String>("uid") ?: ""
+
+                    try {
+                        val keys = loadSectorKeysForCard(uid)
+                        result.success(keys)
+                    } catch (e: Exception) {
+                        result.error("LOAD_ERROR", "Failed to load keys: ${e.message}", null)
+                    }
+                }
+
                 "setSectorKey" -> {
                     val sector = call.argument<Int>("sector") ?: -1
                     val keyType = call.argument<String>("keyType") ?: "A"
@@ -189,6 +219,7 @@ object MifareClassicPlugin {
                         result.error("CONFIG_ERROR", "Configuration failed: ${e.message}", null)
                     }
                 }
+
                 "saveCardKeysToStorage" -> saveCardKeysToStorage(call, result)
                 "loadCardKeysFromStorage" -> loadCardKeysFromStorage(call, result)
                 "setSectorKeyBatch" -> setSectorKeyBatch(call, result)
@@ -281,13 +312,15 @@ object MifareClassicPlugin {
                 // Skip verification to avoid issues with hidden Key A
                 println("DEBUG: Configuration written to sector $sector")
 
-                // Update custom keys
+                // 1. Update in-memory keys
                 customKeysA[sector] = newKeyABytes
 
-                // Re-read the card
-                currentTag?.let {
-                    readAllBlocks(it, false)
-                }
+                // 2. Save to PERMANENT storage
+                val uid = bytesToHex(tag.id) // Get UID from current tag
+                saveSectorKeyToStorage(uid, sector, "A", newKeyA)
+
+                // 3. Re-read the card
+                readAllBlocks(tag, false)
 
                 result.success(true)
 
@@ -299,6 +332,86 @@ object MifareClassicPlugin {
         } catch (e: Exception) {
             println("DEBUG: Configuration error: ${e.message}")
             result.error("CONFIG_ERROR", e.message, null)
+        }
+    }
+
+    // Save sector key for specific card
+    private fun saveSectorKeyToStorage(uid: String, sector: Int, keyType: String, key: String) {
+        try {
+            val context = applicationContext ?: return
+            val sharedPref = context.getSharedPreferences("mifare_sector_keys", Context.MODE_PRIVATE)
+
+            // Get existing JSON or create new
+            val existingJson = sharedPref.getString("sector_keys", "{}") ?: "{}"
+            val jsonObject = JSONObject(existingJson)
+
+            // Create unique identifier: "UID_SECTOR_TYPE"
+            val keyIdentifier = "${uid}_${sector}_${keyType}"
+
+            // Store the key
+            jsonObject.put(keyIdentifier, key)
+
+            // Save back
+            sharedPref.edit().putString("sector_keys", jsonObject.toString()).apply()
+
+            println("DEBUG: Saved sector key: $keyIdentifier = $key")
+
+            // Also update in-memory storage
+            val keyBytes = hexStringToByteArray(key)
+            if (keyType == "A") {
+                customKeysA[sector] = keyBytes
+            } else {
+                customKeysB[sector] = keyBytes
+            }
+
+        } catch (e: Exception) {
+            println("DEBUG: Error saving sector key: ${e.message}")
+            throw e
+        }
+    }
+
+    // Load all sector keys for a specific card
+    private fun loadSectorKeysForCard(uid: String): Map<String, String> {
+        try {
+            val context = applicationContext ?: return emptyMap()
+            val sharedPref = context.getSharedPreferences("mifare_sector_keys", Context.MODE_PRIVATE)
+            val json = sharedPref.getString("sector_keys", "{}") ?: "{}"
+
+            val jsonObject = JSONObject(json)
+            val keys = mutableMapOf<String, String>()
+            val iterator = jsonObject.keys()
+
+            while (iterator.hasNext()) {
+                val key = iterator.next()
+                // Check if this key belongs to the requested card
+                if (key.startsWith("${uid}_")) {
+                    val value = jsonObject.getString(key)
+                    keys[key] = value
+
+                    // Parse the key identifier to update in-memory storage
+                    val parts = key.split("_")
+                    if (parts.size == 3) {
+                        val sector = parts[1].toIntOrNull()
+                        val keyType = parts[2]
+
+                        if (sector != null) {
+                            val keyBytes = hexStringToByteArray(value)
+                            if (keyType == "A") {
+                                customKeysA[sector] = keyBytes
+                            } else {
+                                customKeysB[sector] = keyBytes
+                            }
+                        }
+                    }
+                }
+            }
+
+            println("DEBUG: Loaded ${keys.size} sector keys for card $uid")
+            return keys
+
+        } catch (e: Exception) {
+            println("DEBUG: Error loading sector keys: ${e.message}")
+            return emptyMap()
         }
     }
 
@@ -1085,7 +1198,6 @@ object MifareClassicPlugin {
         }
     }
 
-
     private fun hexStringToByteArray(hex: String): ByteArray {
         val cleanHex = hex.replace("\\s".toRegex(), "").uppercase()
         require(cleanHex.length % 2 == 0) { "Invalid hex string length" }
@@ -1240,6 +1352,7 @@ object MifareClassicPlugin {
             println("DEBUG: Error loading saved keys from storage: ${e.message}")
         }
     }
+
     private fun setCustomKeys(call: MethodCall, result: Result) {
         try {
             val keysMap = call.argument<Map<String, String>>("keys")
